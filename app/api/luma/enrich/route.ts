@@ -6,6 +6,14 @@ import { enrichParticipant, enrichParticipants } from "@/app/lib/enrich";
 import { YouApiError } from "@/app/lib/you";
 import type { EnrichedParticipant, EventParticipants } from "@/app/lib/types";
 
+/**
+ * One person: a LinkedIn search plus three page fetches (20 s crawl each, in
+ * parallel) — well under a minute. Explicit so hosts with a shorter default
+ * (Vercel) don't cut it off. The whole-event mode can exceed this for big
+ * events; the UI enriches per person.
+ */
+export const maxDuration = 60;
+
 export type EnrichedEvent = Omit<EventParticipants, "participants"> & {
   participants: EnrichedParticipant[];
 };

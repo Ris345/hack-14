@@ -79,15 +79,12 @@ export async function getLumaSession(
 }
 
 export async function clearLumaSession() {
-  const store = await cookies();
-  store.delete({ name: COOKIE, path: PATH });
-  store.delete({ name: PENDING_COOKIE, path: PATH });
+  (await cookies()).delete({ name: COOKIE, path: PATH });
 }
 
 /**
- * Check a Luma login with Luma, then store it for this app user. Shared by the
- * email-code sign-in and the paste-a-cookie fallback. Throws `LumaAuthError`
- * if Luma doesn't accept it.
+ * Check a Luma login with Luma, then store it for this app user. Throws
+ * `LumaAuthError` if Luma doesn't accept it.
  */
 export async function storeLumaLogin(
   appUserSub: string,
@@ -100,51 +97,4 @@ export async function storeLumaLogin(
     name: user.name,
   });
   return { name: user.name };
-}
-
-// ---------------------------------------------------------------------------
-// A sign-in in progress: two-factor, between the first factor and the second
-// ---------------------------------------------------------------------------
-
-const PENDING_COOKIE = "luma_signin";
-/** Long enough to open an authenticator app; short enough to be useless after. */
-const PENDING_MAX_AGE = 60 * 10;
-
-/** What Luma hands back after the first factor, needed to submit the second. */
-export type PendingTwoFactor = { userApiId: string; shallowSecret: string };
-
-export async function setPendingTwoFactor(appUserSub: string, pending: PendingTwoFactor) {
-  const token = await new EncryptJWT({ ...pending })
-    .setProtectedHeader({ alg: "dir", enc: "A256GCM" })
-    .setSubject(appUserSub)
-    .setIssuedAt()
-    .setExpirationTime(`${PENDING_MAX_AGE}s`)
-    .encrypt(await encryptionKey());
-  (await cookies()).set(PENDING_COOKIE, token, {
-    httpOnly: true,
-    secure: cookieSecure(),
-    sameSite: "lax",
-    path: PATH,
-    maxAge: PENDING_MAX_AGE,
-  });
-}
-
-/** The pending two-factor sign-in, consumed: it's deleted whether or not it's valid. */
-export async function takePendingTwoFactor(
-  appUserSub: string,
-): Promise<PendingTwoFactor | null> {
-  const store = await cookies();
-  const token = store.get(PENDING_COOKIE)?.value;
-  store.delete({ name: PENDING_COOKIE, path: PATH });
-  if (!token) return null;
-  try {
-    const { payload } = await jwtDecrypt(token, await encryptionKey(), {
-      subject: appUserSub,
-    });
-    const { userApiId, shallowSecret } = payload as Partial<PendingTwoFactor>;
-    if (typeof userApiId !== "string" || typeof shallowSecret !== "string") return null;
-    return { userApiId, shallowSecret };
-  } catch {
-    return null;
-  }
 }

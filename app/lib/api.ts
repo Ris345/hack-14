@@ -1,12 +1,6 @@
-import type {
-  Enrichment,
-  EventParticipants,
-  LumaConnection,
-  LumaSignInStep,
-  User,
-} from "./types";
+import type { Enrichment, EventParticipants, LumaConnection, User } from "./types";
 
-export type { Enrichment, EventParticipants, LumaConnection, LumaSignInStep, User };
+export type { Enrichment, EventParticipants, LumaConnection, User };
 
 /** A failed API call. `code: "luma_auth"` means the stored Luma login stopped working. */
 export class ApiError extends Error {
@@ -43,17 +37,6 @@ export function fetchLumaConnection(): Promise<LumaConnection> {
 /** Store the user's `luma.auth-session-key` (encrypted, server-side). */
 export function connectLuma(cookie: string): Promise<LumaConnection> {
   return call("/api/luma/connect", postJson({ cookie }), "Couldn't connect Luma");
-}
-
-/** One step of signing in to Luma by email code. See `/api/luma/signin`. */
-export function lumaSignIn(
-  body:
-    | { step: "start" | "resend"; email: string }
-    | { step: "code"; email: string; code: string }
-    | { step: "password"; email: string; password: string }
-    | { step: "two-factor"; otp: string },
-): Promise<LumaSignInStep> {
-  return call("/api/luma/signin", postJson(body), "Couldn't sign in to Luma");
 }
 
 export async function disconnectLuma(): Promise<void> {

@@ -79,8 +79,3 @@ export type EventParticipants = {
 export type LumaConnection =
   | { connected: true; name: string | null }
   | { connected: false };
-
-/** What each `POST /api/luma/signin` step returns: what to ask the user for next. */
-export type LumaSignInStep =
-  | { next: "code" | "password" | "two-factor" }
-  | { next: "done"; connection: LumaConnection };

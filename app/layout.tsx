@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "hack-14",
-  description: "Google sign-in",
+  description: "Find the people worth meeting at a Luma event.",
 };
 
 export default function RootLayout({

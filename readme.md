@@ -96,8 +96,7 @@ command with `npm_config_cache="$TMPDIR/npm-cache"`.
 | `POST /api/auth/logout` | Clears the session cookie and the stored Luma login, `204`. POST only, so a prefetch or an `<img>` can't sign you out |
 | `GET /api/luma/connect` | `{ connected: true, name }` or `{ connected: false }`: whether this user has a Luma login stored. Signed-in only |
 | `POST /api/luma/connect` | Body `{ "cookie": "<luma.auth-session-key value>" }` (a `name=value` pair or a whole `Cookie:` header also works). Checks it with Luma's `/user`, then stores it encrypted. `400` if Luma rejects it, `502` if Luma is unreachable. The value is never logged or returned |
-| `DELETE /api/luma/connect` | Forgets the stored Luma login (and any half-finished sign-in), `204` |
-| `POST /api/luma/signin` | Sign in to Luma by emailed code, one step per request. Body `{ step: "start" \| "resend", email }`, `{ step: "code", email, code }`, `{ step: "password", email, password }` or `{ step: "two-factor", otp }`. Returns `{ next: "code" \| "password" \| "two-factor" }`, or `{ next: "done", connection }` once the login is stored. `400` with Luma's own message for a wrong code; `409` with `code: "verification_required"` or `"sso"` when the sign-in can only be done on luma.com (use the paste fallback) |
+| `DELETE /api/luma/connect` | Forgets the stored Luma login, `204` |
 | `POST /api/luma/participants` | Body `{ "url": "https://luma.com/<event>" }`. Signed-in only (`401` otherwise). Returns the event, its guest count and its participants (`EventParticipants` in `app/lib/types.ts`): the full guest list (`source: "guest-list"`) when Luma is connected and the user can see it, else hosts and featured guests (`source: "public"`, with a `notice` saying why if Luma is connected). `400` for a non-Luma or malformed link, `422` if the page isn't an event, `401` with `code: "luma_auth"` if the stored Luma login has expired, `502` if the fetch fails |
 | `POST /api/luma/enrich` | Body `{ "url": "https://luma.com/<event>", "personId"?: "usr-…" }`. Signed-in only. With `personId`: `Enrichment` for that participant (`404` if they aren't on the event); this is what the UI uses. Without: `EnrichedEvent`, every participant enriched (slow). The server only looks up people from the event it fetched itself, so the client can't make it search or fetch arbitrary things |
 
@@ -158,51 +157,26 @@ registered" so this is visible, and offers to connect Luma.
 
 Luma shows an event's full guest list to people **registered** for it, when
 the host has the guest list switched on. To read that list, the user connects
-their Luma login once (`app/luma-connect.tsx`). Two ways:
+their Luma login once (`app/luma-connect.tsx`): on a computer where they're
+signed in to luma.com, they copy the value of the `luma.auth-session-key`
+cookie in DevTools and paste it in. `/api/luma/connect` checks it against
+Luma's `/user` and stores it.
 
-**Default: sign in by emailed code** (`/api/luma/signin`) — works the same on a
-phone. The email is prefilled from the Google sign-in, since most people use
-the same address for Luma (a Luma account created with "Continue with Google"
-is still tied to that email, so the code flow works for it).
+**Why pasting, and not something smoother.** We tried the alternatives:
 
-1. `POST api.luma.com/auth/email/start-with-email {email}` — Luma emails a
-   6-digit code and says how the account signs in (`email-code` or
-   `password`).
-2. The user types the code (the input has `autocomplete="one-time-code"`, so
-   iOS and Android offer it straight from Mail) →
-   `POST /auth/email/sign-in-with-code {email, code}`. Password accounts use
-   `/auth/sign-in-with-password` instead.
-3. If the account has two-factor auth, Luma answers `step: "two_factor"` with a
-   `user_api_id` and `two_factor_shallow_secret`. Those are held for 10 minutes
-   in a second encrypted cookie (`luma_signin`, same scheme as below, consumed
-   on use) until the user enters their authenticator code →
-   `POST /auth/sign-in-with-two-factor`.
-4. Luma's response sets `luma.auth-session-key`; the server reads it from
-   `Set-Cookie` (verbatim), checks it with `/user`, and stores it as below.
+- *Luma's email-code sign-in, run from our server.* Luma answers it with a
+  Cloudflare Turnstile human check (`auth/additional-verification-required`)
+  that only a real browser on luma.com can pass, so it was removed. Getting
+  around that check isn't an option: it exists to stop exactly this.
+- *Reusing our Google sign-in.* Google issues tokens for one app; Luma only
+  accepts tokens issued to Luma.
+- *Reading the cookie from luma.com in another tab, or an iframe.* Browsers
+  don't let one site read another's cookies, and Luma offers no OAuth /
+  "Sign in with Luma" redirect back to other apps.
 
-These are the calls luma.com's own sign-in dialog makes (with
-`x-luma-client-type: luma-web`). Two things make Luma refuse a server-side
-sign-in, and both send the user to the fallback: a Cloudflare Turnstile human
-check (`auth/additional-verification-required`), which only a browser can
-pass, and accounts that sign in through an organization's identity provider
-(`sso_config`). Our Google sign-in can't be reused for Luma: Google issues
-tokens for one app, and Luma only accepts ones issued to Luma.
-
-**Status: blocked in practice.** In testing (Nov 2026), Luma answered
-`start-with-email` from our server with the Turnstile check every time, so
-the app shows the "verify you're human" message and opens the paste
-fallback. Getting around that check isn't an option: it exists to stop
-exactly this kind of server-side sign-in. Until Luma offers a way for other
-apps to sign users in, the paste fallback is the working path.
-
-Codes, passwords and the session are passed straight through, never logged
-or stored apart from the encrypted login. This makes the app a sign-in screen
-for another service, which is fine for your own account but looks like
-phishing to anyone else — don't offer it to other people as is.
-
-**Fallback: paste the cookie** ("Other ways to connect", desktop): copy the
-value of `luma.auth-session-key` from luma.com in DevTools and paste it in.
-`/api/luma/connect` checks it against Luma's `/user` and stores it.
+What would make it work on phones too: store the encrypted login server-side
+keyed on the Google account (needs a small store such as Redis), so connecting
+once on a computer connects every device.
 
 **How the login is stored** (`app/lib/luma-session.ts`). That cookie value is
 a full credential for the user's Luma account, so it is treated like a
@@ -376,7 +350,7 @@ app/
   layout.tsx, globals.css      root layout; system font stack (no next/font/google)
   page.tsx, page.module.css    sign in / sign out UI (client component)
   event-lookup.tsx             Luma link input, enrichment, stars, filtered list (client component)
-  luma-connect.tsx             connect Luma: email-code sign-in, paste fallback, disconnect (client component)
+  luma-connect.tsx             connect / disconnect the user's Luma login (client component)
   people-filters.tsx           tabs, search, chips, sort; applyFilters() (client component)
   person-card.tsx              one participant: details, tags, star (client component)
   lib/
@@ -390,10 +364,10 @@ app/
     cache.ts                   query-keyed in-memory cache         (server-only)
     luma.ts                    event link → participants: public, or full guest list (server-only)
     luma-api.ts                api.luma.com client with the user's login (server-only)
-    luma-session.ts            encrypted cookies: the Luma login, a pending 2FA sign-in (server-only)
+    luma-session.ts            encrypted cookie holding the Luma login (server-only)
     enrich.ts                  participant → find LinkedIn, read LinkedIn/X/website (server-only)
   api/auth/{login,callback/google,me,logout}/route.ts
-  api/luma/{participants,enrich,connect,signin}/route.ts
+  api/luma/{participants,enrich,connect}/route.ts
 next.config.ts                 cacheComponents + partialPrefetching enabled
 ```
 
@@ -455,8 +429,43 @@ One place to change: in `app/api/auth/callback/google/route.ts`, between
 user ID — not the email, which can change) and put your own user ID in the
 session instead of the profile fields.
 
+## Deploying to Vercel
+
+1. **Import the repo.** In the Vercel dashboard: Add New → Project → import
+   `Ris345/hack-14`. The defaults (Next.js, `npm run build`) are right. Every
+   merge to `main` then redeploys.
+2. **Environment variables** (Project → Settings → Environment Variables,
+   Production):
+
+   | Variable | Value |
+   |---|---|
+   | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | same Google client as dev is fine |
+   | `SESSION_SECRET` | a **new** one: `openssl rand -hex 32`. Don't reuse dev's |
+   | `APP_URL` | `https://<project>.vercel.app` (or your custom domain), no trailing slash |
+   | `YDC_API_KEY` | your you.com key |
+
+   Redeploy after adding them; env vars apply to new deployments only.
+3. **Google Cloud Console** → Credentials → the OAuth client → Authorized
+   redirect URIs: add `https://<project>.vercel.app/api/auth/callback/google`
+   (exactly, no trailing slash).
+4. **Who can sign in.** While the OAuth consent screen is in *Testing*, only
+   Google accounts listed under **Test users** (up to 100) can sign in. Add
+   each person who should see the demo there. That also keeps strangers from
+   spending your you.com credits.
+
+Then open the URL, sign in, and look up an event.
+
+On Vercel:
+
+- The Luma routes declare `maxDuration = 60` (a you.com page fetch can take up
+  to ~50 s), which every Vercel plan allows.
+- The cache (`app/lib/cache.ts`) is per serverless instance and resets on cold
+  starts, so you.com is called a bit more often than in dev. A shared store
+  (Redis) would fix that.
+
 ## Production notes
 
 - Set `APP_URL` to the real origin; cookies become `Secure` automatically.
 - Add `https://your-domain/api/auth/callback/google` to the Google client's redirect URIs.
-- Rotating `SESSION_SECRET` invalidates every existing session.
+- Rotating `SESSION_SECRET` invalidates every existing session, and every
+  stored Luma login.

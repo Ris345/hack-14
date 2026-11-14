@@ -5,6 +5,13 @@ import { getEventParticipants, LumaError } from "@/app/lib/luma";
 import { YouApiError } from "@/app/lib/you";
 
 /**
+ * Up to ~50 s: a you.com page fetch has a 30 s crawl timeout plus headroom.
+ * Explicit so hosts with a shorter default (Vercel) don't cut it off. 60 s is
+ * allowed on every Vercel plan.
+ */
+export const maxDuration = 60;
+
+/**
  * Body: `{ "url": "https://luma.com/<event>" }`. Returns `EventParticipants`.
  *
  * Signed-in users only: every new event costs a metered you.com call. If the
