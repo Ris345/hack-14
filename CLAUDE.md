@@ -1,7 +1,8 @@
 # hack-14
 
-A single Next.js 16 app (App Router, Turbopack). Google sign-in only — no
-database. See `readme.md` for setup and the OAuth design.
+A single Next.js 16 app (App Router, Turbopack). No database. Layer 1 (Google
+sign-in) is done; layer 2 (recommendations) has only its you.com client and
+cache so far. See `readme.md` for setup, the OAuth design and the roadmap.
 
 ## This is NOT the Next.js you know
 
@@ -23,9 +24,12 @@ Specifically:
 app/
   page.tsx                     sign in / sign out UI (client component)
   lib/types.ts                 the User type
+  lib/api.ts                   client-side fetch helpers (loginUrl, fetchMe, logout)
   lib/env.ts                   env vars, read lazily
   lib/session.ts               session + OAuth-transaction cookies
   lib/google.ts                authorization URL, PKCE, code exchange, ID-token verification
+  lib/you.ts                   you.com search client (layer 2; not wired to a route yet)
+  lib/cache.ts                 query-keyed in-memory cache; every you.com call goes through it
   api/auth/{login,callback/google,me,logout}/route.ts
 ```
 
@@ -34,8 +38,11 @@ app/
 - Env vars are read through **getter functions** in `app/lib/env.ts`, never at
   module scope. `next build` evaluates route modules, so a missing variable must
   break a *request*, not the build.
-- `app/lib/{env,session,google}.ts` are server-only (`import "server-only"`).
-  Never import them from a client component.
+- `app/lib/{env,session,google,you,cache}.ts` are server-only
+  (`import "server-only"`). Never import them from a client component; the
+  client uses `app/lib/api.ts`.
+- Outbound you.com calls go through `cached()` in `app/lib/cache.ts`, keyed on
+  the query (never the user). They're metered — don't bypass the cache.
 - Routes are same-origin, so client fetches need no `credentials: "include"`
   and there is no CORS config.
 - The session cookie is **signed, not encrypted**. Its payload is readable
