@@ -10,9 +10,10 @@ session is a signed HttpOnly cookie.
 
 - **Layer 1 — Google sign-in: done.** Sign in with a Google account, see who
   you are, sign out.
-- **Layer 2 — recommendations: foundation only.** A typed you.com search
-  client and a query-keyed cache exist in `app/lib/`, but nothing calls them
-  yet — there is no recommendation route or UI.
+- **Layer 2 — recommendations: in progress.** Signed-in users can paste a
+  Luma event link and see its public participants (hosts and featured guests)
+  with their social links, fetched through the you.com Contents API. Title
+  matching and recommendations aren't built yet.
 
 See [Where this is going](#where-this-is-going) for the rest.
 
@@ -51,7 +52,7 @@ Fill in `.env.local`:
 | `GOOGLE_CLIENT_SECRET` | from the Console |
 | `SESSION_SECRET` | `openssl rand -hex 32`; signs the cookies |
 | `APP_URL` | `http://localhost:3000` in dev; the public origin in production |
-| `YDC_API_KEY` | you.com API key, from <https://you.com/platform>; layer 2 only, sign-in works without it |
+| `YDC_API_KEY` | you.com API key, from <https://you.com/platform>. Needed for the Luma event lookup; sign-in works without it. If it's missing, lookups fail and the server logs `Missing YDC_API_KEY` |
 
 `.env.local` is gitignored. Never commit it.
 
@@ -87,6 +88,7 @@ command with `npm_config_cache="$TMPDIR/npm-cache"`.
 | `GET /api/auth/callback/google` | Verifies `state`, exchanges the code (PKCE), verifies the ID token, sets the session cookie, redirects home. On failure redirects to `/?error=access_denied` (user cancelled) or `/?error=auth_failed` (anything else) |
 | `GET /api/auth/me` | The signed-in user (`{ sub, email, name, picture }`) as JSON, or `401` |
 | `POST /api/auth/logout` | Clears the session cookie, `204`. POST only, so a prefetch or an `<img>` can't sign you out |
+| `POST /api/luma/participants` | Body `{ "url": "https://luma.com/<event>" }`. Signed-in only (`401` otherwise). Returns the event, its guest count and its public participants (`EventParticipants` in `app/lib/types.ts`). `400` for a non-Luma or malformed link, `422` if the page isn't a public event, `502` if the fetch fails |
 
 The page (`app/page.tsx`) calls `/api/auth/me` on mount, turns an `?error=`
 code into a readable message, and strips it from the URL so a reload doesn't
@@ -117,14 +119,40 @@ The session cookie (`session`, 7 days) is an HS256 JWT signed with
 don't put anything sensitive in it. It's `HttpOnly`, `SameSite=Lax`, and
 `Secure` whenever `APP_URL` is `https://`.
 
-## Layer 2 foundation: you.com + cache
+## Layer 2: Luma participants via you.com
 
-Server-only building blocks for recommendations. Not wired to any route yet.
+### Event lookup
 
-**`app/lib/you.ts`** — a thin typed client for the you.com Web Search API
-(`POST https://ydc-index.io/v1/search`, `X-API-Key: $YDC_API_KEY`).
-Transport only; no Luma or LinkedIn knowledge lives here.
+Signed in, the home page shows an input for a Luma event link
+(`app/event-lookup.tsx`). It posts to `/api/luma/participants`, which calls
+`getEventParticipants()` in `app/lib/luma.ts`:
 
+1. **Normalize the link** to `https://luma.com/<slug>` (`lu.ma` accepted). The
+   query string is dropped — `?tk=…` is a personal invite token and shouldn't
+   go to a third party or split the cache.
+2. **Fetch the page's raw HTML** with the you.com Contents API
+   (`crawl_timeout` 30 s; Luma pages are heavy).
+3. **Parse the embedded Next.js JSON** (`<script id="__NEXT_DATA__">`,
+   `props.pageProps.initialData.data`): the event name and start time, the
+   guest count, `hosts`, and `featured_guests`.
+4. **Map each person** to `{ name, role, avatarUrl, bio, socials }`, turning
+   Luma's stored handles (`/in/jdoe`, `@jdoe`, `jdoe`) into full LinkedIn, X,
+   Instagram, TikTok, YouTube, website and Luma profile URLs.
+
+**Limitation: this is not the full guest list.** A public Luma page carries
+only the hosts and the ~10 guests Luma features; the rest are behind Luma's
+login. The UI shows "N featured guests of M registered" so this is visible.
+
+### you.com client and cache
+
+**`app/lib/you.ts`** — a thin typed client for the you.com Search and
+Contents APIs (`POST https://ydc-index.io/v1/{search,contents}`,
+`X-API-Key: $YDC_API_KEY`). Transport only; no Luma or LinkedIn knowledge
+lives here.
+
+- `contents(url, { formats, crawlTimeout, maxAge })` returns one page's
+  `markdown` / `html` / `metadata`, or `null` if you.com couldn't fetch it
+  ($1 per 1,000 pages).
 - `search(query, { count, includeDomains, freshness, highlights })` returns
   `WebResult[]`. `highlights: true` asks you.com to extract the matching
   passages of each page — slower, but it's what makes results usable as text.
@@ -135,7 +163,8 @@ Transport only; no Luma or LinkedIn knowledge lives here.
   description.
 
 **`app/lib/cache.ts`** — an in-memory cache keyed on the **query**, not the
-user, so one lookup serves everyone. Every `search()` goes through it.
+user, so one lookup serves everyone. Every `search()` and `contents()` call
+goes through it.
 
 - `cached(key, fetch, ttlMs?)` caches the *promise*, so concurrent identical
   queries make one upstream call. A rejected promise is evicted, so a
@@ -163,15 +192,18 @@ user, so one lookup serves everyone. Every `search()` goes through it.
 app/
   layout.tsx, globals.css      root layout; system font stack (no next/font/google)
   page.tsx, page.module.css    sign in / sign out UI (client component)
+  event-lookup.tsx             Luma link input + participant list (client component)
   lib/
     types.ts                   the User type, shared by routes and the page
     api.ts                     client-side helpers: loginUrl, fetchMe(), logout()
     env.ts                     env vars, read lazily               (server-only)
     session.ts                 session + OAuth-transaction cookies (server-only)
     google.ts                  authorization URL, PKCE, code exchange, ID-token verification (server-only)
-    you.ts                     you.com search client               (server-only)
+    you.ts                     you.com Search + Contents client    (server-only)
     cache.ts                   query-keyed in-memory cache         (server-only)
+    luma.ts                    event link → public participants    (server-only)
   api/auth/{login,callback/google,me,logout}/route.ts
+  api/luma/participants/route.ts
 next.config.ts                 cacheComponents + partialPrefetching enabled
 ```
 
@@ -203,10 +235,10 @@ cache, keyed on the query — shared across users
 connection graphs or mutuals: those sit behind LinkedIn's login wall and no
 search-based tool reaches them. Public headlines are indexed and do.
 
-Built so far: the you.com client and the query cache (see
-[Layer 2 foundation](#layer-2-foundation-youcom--cache)). Still to build: the
-Luma event lookup, headline → title extraction, title normalization and
-matching, a recommendations route, and the UI for it.
+Built so far: the you.com client, the query cache, and the Luma event lookup
+(see [Layer 2](#layer-2-luma-participants-via-youcom)). Still to build:
+headline → title extraction, title normalization and matching, and
+recommendations.
 
 Two things this still needs from the user side:
 
