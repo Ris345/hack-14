@@ -12,8 +12,10 @@ session is a signed HttpOnly cookie.
   you are, sign out.
 - **Layer 2 — recommendations: in progress.** Signed-in users can paste a
   Luma event link and see its public participants (hosts and featured guests)
-  with their social links, fetched through the you.com Contents API. Title
-  matching and recommendations aren't built yet.
+  with their social links, fetched through the you.com Contents API. Each
+  participant is then enriched from their LinkedIn, X and website (headline,
+  location, bio, site summary). Title matching and recommendations aren't
+  built yet.
 
 See [Where this is going](#where-this-is-going) for the rest.
 
@@ -89,6 +91,7 @@ command with `npm_config_cache="$TMPDIR/npm-cache"`.
 | `GET /api/auth/me` | The signed-in user (`{ sub, email, name, picture }`) as JSON, or `401` |
 | `POST /api/auth/logout` | Clears the session cookie, `204`. POST only, so a prefetch or an `<img>` can't sign you out |
 | `POST /api/luma/participants` | Body `{ "url": "https://luma.com/<event>" }`. Signed-in only (`401` otherwise). Returns the event, its guest count and its public participants (`EventParticipants` in `app/lib/types.ts`). `400` for a non-Luma or malformed link, `422` if the page isn't a public event, `502` if the fetch fails |
+| `POST /api/luma/enrich` | Body `{ "url": "https://luma.com/<event>", "personId": "usr-…" }`. Signed-in only. Returns `Enrichment` (in `app/lib/types.ts`) for that participant. The server looks the person up in the event and fetches only the links Luma lists for them, so the client can't make it fetch arbitrary URLs. `404` if the person isn't on that event |
 
 The page (`app/page.tsx`) calls `/api/auth/me` on mount, turns an `?error=`
 code into a readable message, and strips it from the URL so a reload doesn't
@@ -143,6 +146,28 @@ Signed in, the home page shows an input for a Luma event link
 only the hosts and the ~10 guests Luma features; the rest are behind Luma's
 login. The UI shows "N featured guests of M registered" so this is visible.
 
+### Enrichment
+
+Once the participant list is on screen, the page calls `/api/luma/enrich`
+for each person who has a LinkedIn, X or website link, four at a time, and
+fills in each card as results arrive. `enrichParticipant()` in
+`app/lib/enrich.ts` fetches those pages in parallel with the you.com
+Contents API (markdown, 20 s crawl timeout) and parses:
+
+| Source | Fields | From you.com's markdown |
+|---|---|---|
+| LinkedIn | `headline`, `location`, `about` | the bold headline line, `- **Location**: …`, the first paragraph |
+| X | `bio`, `followers` | `- **description**: …`, `- **followers_count**: …` |
+| Website | `title`, `summary` | the page title, the first real paragraph |
+
+Every fetch is best-effort: a page that fails (login wall, timeout) just
+leaves its section out, and a format change yields `null` fields rather than
+an error. Long text is clipped to 280 characters. Pages are cached per URL,
+so someone who appears at several events is fetched once. Cost is up to three
+pages per person (about $0.003 at $1 per 1,000 pages).
+
+Instagram, TikTok and YouTube links are shown but not enriched yet.
+
 ### you.com client and cache
 
 **`app/lib/you.ts`** — a thin typed client for the you.com Search and
@@ -192,7 +217,7 @@ goes through it.
 app/
   layout.tsx, globals.css      root layout; system font stack (no next/font/google)
   page.tsx, page.module.css    sign in / sign out UI (client component)
-  event-lookup.tsx             Luma link input + participant list (client component)
+  event-lookup.tsx             Luma link input + participant list + enrichment (client component)
   lib/
     types.ts                   the User type, shared by routes and the page
     api.ts                     client-side helpers: loginUrl, fetchMe(), logout()
@@ -202,8 +227,9 @@ app/
     you.ts                     you.com Search + Contents client    (server-only)
     cache.ts                   query-keyed in-memory cache         (server-only)
     luma.ts                    event link → public participants    (server-only)
+    enrich.ts                  participant → LinkedIn/X/website details (server-only)
   api/auth/{login,callback/google,me,logout}/route.ts
-  api/luma/participants/route.ts
+  api/luma/{participants,enrich}/route.ts
 next.config.ts                 cacheComponents + partialPrefetching enabled
 ```
 
@@ -235,10 +261,10 @@ cache, keyed on the query — shared across users
 connection graphs or mutuals: those sit behind LinkedIn's login wall and no
 search-based tool reaches them. Public headlines are indexed and do.
 
-Built so far: the you.com client, the query cache, and the Luma event lookup
-(see [Layer 2](#layer-2-luma-participants-via-youcom)). Still to build:
-headline → title extraction, title normalization and matching, and
-recommendations.
+Built so far: the you.com client, the query cache, the Luma event lookup, and
+per-participant enrichment, which already pulls each LinkedIn headline (see
+[Layer 2](#layer-2-luma-participants-via-youcom)). Still to build: headline →
+title extraction, title normalization and matching, and recommendations.
 
 Two things this still needs from the user side:
 

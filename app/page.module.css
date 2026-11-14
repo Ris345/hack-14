@@ -166,3 +166,32 @@
   margin-top: 6px;
   font-size: 13px;
 }
+
+.enrich {
+  margin: 8px 0 0;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.enrichRow {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 8px;
+}
+
+.enrichRow dt {
+  color: var(--muted);
+}
+
+.enrichRow dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.enrichPending {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-style: italic;
+}

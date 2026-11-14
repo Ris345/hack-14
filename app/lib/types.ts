@@ -26,6 +26,28 @@ export type Participant = {
   socials: Socials;
 };
 
+/**
+ * What `POST /api/luma/enrich` returns for one participant: what their social
+ * pages say about them. A section is absent when the person has no such link,
+ * or when the page couldn't be fetched (login wall, timeout).
+ */
+export type Enrichment = {
+  linkedin?: {
+    /** Their LinkedIn headline, e.g. "Founder @ The Builder Series". */
+    headline: string | null;
+    location: string | null;
+    about: string | null;
+  };
+  twitter?: {
+    bio: string | null;
+    followers: number | null;
+  };
+  website?: {
+    title: string | null;
+    summary: string | null;
+  };
+};
+
 /** What `POST /api/luma/participants` returns. */
 export type EventParticipants = {
   event: { name: string; url: string; startAt: string | null };

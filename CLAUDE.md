@@ -1,8 +1,8 @@
 # hack-14
 
 A single Next.js 16 app (App Router, Turbopack). No database. Layer 1 (Google
-sign-in) is done; layer 2 (recommendations) has the you.com client, cache and Luma
-participant lookup so far. See `readme.md` for setup, the OAuth design and the roadmap.
+sign-in) is done; layer 2 (recommendations) has the you.com client, cache, Luma
+participant lookup and enrichment so far. See `readme.md` for setup, the OAuth design and the roadmap.
 
 ## This is NOT the Next.js you know
 
@@ -24,16 +24,17 @@ Specifically:
 app/
   page.tsx                     sign in / sign out UI (client component)
   event-lookup.tsx             Luma link input + participant list (client component)
-  lib/types.ts                 the User type
-  lib/api.ts                   client-side fetch helpers (loginUrl, fetchMe, logout)
+  lib/types.ts                 shared types: User, Participant, EventParticipants, Enrichment
+  lib/api.ts                   client-side fetch helpers (auth, event participants, enrichment)
   lib/env.ts                   env vars, read lazily
   lib/session.ts               session + OAuth-transaction cookies
   lib/google.ts                authorization URL, PKCE, code exchange, ID-token verification
   lib/you.ts                   you.com Search + Contents client
   lib/cache.ts                 query-keyed in-memory cache; every you.com call goes through it
   lib/luma.ts                  Luma event link → public participants (parses __NEXT_DATA__)
+  lib/enrich.ts                participant → LinkedIn/X/website details via you.com Contents
   api/auth/{login,callback/google,me,logout}/route.ts
-  api/luma/participants/route.ts
+  api/luma/{participants,enrich}/route.ts
 ```
 
 ## Conventions
@@ -41,7 +42,7 @@ app/
 - Env vars are read through **getter functions** in `app/lib/env.ts`, never at
   module scope. `next build` evaluates route modules, so a missing variable must
   break a *request*, not the build.
-- `app/lib/{env,session,google,you,cache,luma}.ts` are server-only
+- `app/lib/{env,session,google,you,cache,luma,enrich}.ts` are server-only
   (`import "server-only"`). Never import them from a client component; the
   client uses `app/lib/api.ts`.
 - Outbound you.com calls go through `cached()` in `app/lib/cache.ts`, keyed on
