@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/app/lib/session";
+import { getLumaSession } from "@/app/lib/luma-session";
 import { getEventParticipants, LumaError } from "@/app/lib/luma";
 import { enrichParticipant, enrichParticipants } from "@/app/lib/enrich";
 import { YouApiError } from "@/app/lib/you";
@@ -23,7 +24,8 @@ export type EnrichedEvent = Omit<EventParticipants, "participants"> & {
  * fetch is cached, so the only new cost here is the enrichment itself.
  */
 export async function POST(request: Request) {
-  if (!(await getSession())) {
+  const user = await getSession();
+  if (!user) {
     return NextResponse.json({ error: "Not signed in" }, { status: 401 });
   }
 
@@ -42,7 +44,12 @@ export async function POST(request: Request) {
   }
 
   try {
-    const event = await getEventParticipants(body.url);
+    // Same view as the lookup, so people from the full guest list are found.
+    // (Cached, so this costs nothing after the lookup itself.)
+    const event = await getEventParticipants(
+      body.url,
+      await getLumaSession(user.sub),
+    );
 
     if (body.personId !== undefined) {
       const person = event.participants.find((p) => p.id === body.personId);
@@ -61,7 +68,10 @@ export async function POST(request: Request) {
     } satisfies EnrichedEvent);
   } catch (err) {
     if (err instanceof LumaError) {
-      return NextResponse.json({ error: err.message }, { status: err.status });
+      return NextResponse.json(
+        { error: err.message, code: err.code },
+        { status: err.status },
+      );
     }
     console.error("Enrichment failed:", err);
     const message =

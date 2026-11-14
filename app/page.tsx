@@ -103,7 +103,7 @@ export default function Home() {
         {error ? <p className={styles.error}>{error}</p> : null}
       </div>
 
-      {user ? <EventLookup /> : null}
+      {user ? <EventLookup email={user.email} /> : null}
     </main>
   );
 }

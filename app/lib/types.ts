@@ -62,8 +62,25 @@ export type EnrichedParticipant = Participant & { enrichment: Enrichment };
 /** What `POST /api/luma/participants` returns. */
 export type EventParticipants = {
   event: { name: string; url: string; startAt: string | null };
-  /** Total registered guests. Only a few are public; see `participants`. */
+  /** Total registered guests, as Luma reports it. */
   guestCount: number | null;
-  /** Hosts plus the guests Luma features publicly — not the full guest list. */
+  /** Hosts, then guests: the featured few (`public`) or everyone (`guest-list`). */
   participants: Participant[];
+  /**
+   * `public` — hosts and featured guests only, what anyone can see.
+   * `guest-list` — the full list Luma shows the user as a registered guest.
+   */
+  source: "public" | "guest-list";
+  /** Why a connected user got the public view instead of the full list. */
+  notice: string | null;
 };
+
+/** What `GET /api/luma/connect` returns. */
+export type LumaConnection =
+  | { connected: true; name: string | null }
+  | { connected: false };
+
+/** What each `POST /api/luma/signin` step returns: what to ask the user for next. */
+export type LumaSignInStep =
+  | { next: "code" | "password" | "two-factor" }
+  | { next: "done"; connection: LumaConnection };

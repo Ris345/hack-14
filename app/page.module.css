@@ -393,3 +393,93 @@
 .star[aria-pressed="true"] {
   color: #d97706;
 }
+
+/* ---- Luma connection ---- */
+
+.lumaConnect,
+.lumaBar {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  font-size: 14px;
+}
+
+.lumaConnect summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.lumaConnect[open] summary {
+  margin-bottom: 8px;
+}
+
+.lumaBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.lumaDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: #16a34a;
+}
+
+.steps {
+  margin: 8px 0 12px;
+  padding-left: 20px;
+  line-height: 1.6;
+}
+
+.steps code,
+.fineprint code {
+  font-size: 12px;
+}
+
+.fineprint {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.notice {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  font-size: 13px;
+}
+
+.enrichPrompt {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.enrichPrompt .button {
+  margin-top: 0;
+}
+
+.fallback {
+  margin-top: 12px;
+}
+
+.fallback summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.fallback[open] summary {
+  margin-bottom: 8px;
+}
