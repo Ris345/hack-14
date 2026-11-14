@@ -2,7 +2,7 @@
 
 A single Next.js 16 app (App Router, Turbopack). No database. Layer 1 (Google
 sign-in) is done; layer 2 (recommendations) has the you.com client, cache, Luma
-participant lookup and enrichment so far. See `readme.md` for setup, the OAuth design and the roadmap.
+participant lookup, enrichment and client-side filters so far. See `readme.md` for setup, the OAuth design and the roadmap.
 
 ## This is NOT the Next.js you know
 
@@ -23,9 +23,12 @@ Specifically:
 ```
 app/
   page.tsx                     sign in / sign out UI (client component)
-  event-lookup.tsx             Luma link input + participant list (client component)
+  event-lookup.tsx             Luma link input, enrichment, stars, filtered list (client component)
+  people-filters.tsx           tabs, search, role/industry chips, sort (client component)
+  person-card.tsx              one participant card: details, tags, star (client component)
   lib/types.ts                 shared types: User, Participant, EventParticipants, Enrichment
   lib/api.ts                   client-side fetch helpers (auth, event participants, enrichment)
+  lib/classify.ts              role/industry tags + seniority from profile text (client-safe, pure)
   lib/env.ts                   env vars, read lazily
   lib/session.ts               session + OAuth-transaction cookies
   lib/google.ts                authorization URL, PKCE, code exchange, ID-token verification
