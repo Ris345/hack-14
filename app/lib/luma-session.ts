@@ -10,10 +10,9 @@ import { getLumaUser } from "./luma-api";
  * guest lists Luma shows *them* — the full list of an event they're
  * registered for, not just the public featured guests.
  *
- * That value is a full credential for their Luma account, so unlike the app
- * session (signed, readable) this cookie is **encrypted** (AES-256-GCM),
- * HttpOnly, scoped to `/api/luma`, and bound to the app user who connected
- * it: if someone else signs in on the same browser it reads as absent.
+ * That value is a full credential for their Luma account, so this cookie is
+ * **encrypted** (AES-256-GCM), HttpOnly and scoped to `/api/luma`. There are
+ * no app accounts: the login belongs to whoever connected it in this browser.
  *
  * It is only ever sent to api.luma.com — never to you.com or anywhere else —
  * and must never be logged.
@@ -32,7 +31,7 @@ export type LumaSession = {
   name: string | null;
 };
 
-/** A separate key from the cookie-signing one, derived from the same secret. */
+/** Derived from `SESSION_SECRET` with a fixed label, so the raw secret is never the key. */
 async function encryptionKey(): Promise<Uint8Array> {
   const label = new TextEncoder().encode("hack14:luma-session:");
   const secret = sessionSecret();
@@ -42,10 +41,9 @@ async function encryptionKey(): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", input));
 }
 
-export async function setLumaSession(appUserSub: string, session: LumaSession) {
+export async function setLumaSession(session: LumaSession) {
   const token = await new EncryptJWT({ ...session })
     .setProtectedHeader({ alg: "dir", enc: "A256GCM" })
-    .setSubject(appUserSub)
     .setIssuedAt()
     .setExpirationTime(`${MAX_AGE}s`)
     .encrypt(await encryptionKey());
@@ -59,21 +57,17 @@ export async function setLumaSession(appUserSub: string, session: LumaSession) {
   });
 }
 
-/** The stored Luma login for this app user, or null. */
-export async function getLumaSession(
-  appUserSub: string,
-): Promise<LumaSession | null> {
+/** The Luma login stored in this browser, or null. */
+export async function getLumaSession(): Promise<LumaSession | null> {
   const token = (await cookies()).get(COOKIE)?.value;
   if (!token) return null;
   try {
-    const { payload } = await jwtDecrypt(token, await encryptionKey(), {
-      subject: appUserSub,
-    });
+    const { payload } = await jwtDecrypt(token, await encryptionKey());
     const { cookie, userApiId, name } = payload as Partial<LumaSession>;
     if (typeof cookie !== "string" || typeof userApiId !== "string") return null;
     return { cookie, userApiId, name: typeof name === "string" ? name : null };
   } catch {
-    // Tampered, expired, another app user's, or an older SESSION_SECRET.
+    // Tampered, expired, or encrypted with an older SESSION_SECRET.
     return null;
   }
 }
@@ -83,15 +77,14 @@ export async function clearLumaSession() {
 }
 
 /**
- * Check a Luma login with Luma, then store it for this app user. Throws
+ * Check a Luma login with Luma, then store it in this browser. Throws
  * `LumaAuthError` if Luma doesn't accept it.
  */
 export async function storeLumaLogin(
-  appUserSub: string,
   cookie: string,
 ): Promise<{ name: string | null }> {
   const user = await getLumaUser(cookie);
-  await setLumaSession(appUserSub, {
+  await setLumaSession({
     cookie,
     userApiId: user.apiId,
     name: user.name,

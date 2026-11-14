@@ -3,47 +3,29 @@
 Recommends people to follow and events to attend, by matching your job title
 against the people behind [Luma](https://lu.ma) events.
 
-A single Next.js 16 app (App Router, Turbopack, React 19). No database: the
-session is a signed HttpOnly cookie.
+A single Next.js 16 app (App Router, Turbopack, React 19). No accounts and no
+database: anyone with the link can use it.
 
-**Current state:**
+**Current state:** paste a Luma event link and see its public participants
+(hosts and featured guests) with their social links, fetched through the
+you.com Contents API — or, after connecting your Luma login, the event's full
+guest list as Luma shows it to you as a registered guest. Each participant is
+then enriched from their LinkedIn, X and website (headline, location, bio,
+site summary); for people with no LinkedIn link, a conservative name search
+finds it. Tabs, search, role/industry filters, sorting and a starred "Want to
+meet" list narrow the list down. Matching against your own title and
+recommendations aren't built yet.
 
-- **Layer 1 — Google sign-in: done.** Sign in with a Google account, see who
-  you are, sign out.
-- **Layer 2 — recommendations: in progress.** Signed-in users can paste a
-  Luma event link and see its public participants (hosts and featured guests)
-  with their social links, fetched through the you.com Contents API — or, after
-  connecting their Luma login, the event's full guest list as Luma shows it
-  to them as a registered guest. Each
-  participant is then enriched from their LinkedIn, X and website (headline,
-  location, bio, site summary); for people with no LinkedIn link, a
-  conservative name search finds it. Tabs, search, role/industry filters,
-  sorting and a starred "Want to meet" list narrow the list down. Matching
-  against your own title and recommendations aren't built yet.
+**It's open on purpose.** There's no sign-in, so anyone who has the URL can run
+lookups, and every new event or profile read is a paid you.com call (cached for
+6 hours). Fine for a demo; put something in front of it (an access code, or
+Vercel's deployment protection) before sharing it widely.
 
 See [Where this is going](#where-this-is-going) for the rest.
 
 ## Setup
 
-### 1. Get Google credentials
-
-This part is interactive and has to be done by hand:
-
-1. [Google Cloud Console](https://console.cloud.google.com/) → create or select a project.
-2. **APIs & Services → OAuth consent screen** → **External** → add your own Gmail
-   address under **Test users** (otherwise Google blocks the sign-in).
-3. **APIs & Services → Credentials → Create credentials → OAuth client ID** →
-   **Web application**.
-4. Under **Authorized redirect URIs** add exactly:
-
-   ```
-   http://localhost:3000/api/auth/callback/google
-   ```
-
-   It must match character for character — a trailing slash breaks it.
-5. Copy the client ID and client secret.
-
-### 2. Configure
+### 1. Configure
 
 ```bash
 cp .env.example .env.local   # if .env.local doesn't already exist
@@ -54,11 +36,8 @@ Fill in `.env.local`:
 
 | Variable | What it is |
 |---|---|
-| `GOOGLE_CLIENT_ID` | from the Console |
-| `GOOGLE_CLIENT_SECRET` | from the Console |
-| `SESSION_SECRET` | `openssl rand -hex 32`; signs the cookies |
-| `APP_URL` | `http://localhost:3000` in dev; the public origin in production |
-| `YDC_API_KEY` | you.com API key, from <https://you.com/platform>. Needed for the Luma event lookup; sign-in works without it. If it's missing, lookups fail and the server logs `Missing YDC_API_KEY` |
+| `YDC_API_KEY` | you.com API key, from <https://you.com/platform>. Needed for every event lookup and profile read. If it's missing, lookups fail and the server logs `Missing YDC_API_KEY` |
+| `SESSION_SECRET` | `openssl rand -hex 32`. Encrypts the stored Luma login. Only needed to connect Luma; lookups work without it |
 
 `.env.local` is gitignored. Never commit it.
 
@@ -66,7 +45,7 @@ Env vars are read lazily through getters in `app/lib/env.ts`, so a missing
 one fails the request that needs it (with a message pointing at
 `.env.example`), not `next build`.
 
-### 3. Run
+### 2. Run
 
 ```bash
 npm install
@@ -90,50 +69,19 @@ command with `npm_config_cache="$TMPDIR/npm-cache"`.
 
 | Route | Behavior |
 |---|---|
-| `GET /api/auth/login` | Redirects to Google's consent screen. Must be a real navigation (`<a href>`), not a `fetch` |
-| `GET /api/auth/callback/google` | Verifies `state`, exchanges the code (PKCE), verifies the ID token, sets the session cookie, redirects home. On failure redirects to `/?error=access_denied` (user cancelled) or `/?error=auth_failed` (anything else) |
-| `GET /api/auth/me` | The signed-in user (`{ sub, email, name, picture }`) as JSON, or `401` |
-| `POST /api/auth/logout` | Clears the session cookie and the stored Luma login, `204`. POST only, so a prefetch or an `<img>` can't sign you out |
-| `GET /api/luma/connect` | `{ connected: true, name }` or `{ connected: false }`: whether this user has a Luma login stored. Signed-in only |
+| `GET /api/luma/connect` | `{ connected: true, name }` or `{ connected: false }`: whether this browser has a Luma login stored |
 | `POST /api/luma/connect` | Body `{ "cookie": "<luma.auth-session-key value>" }` (a `name=value` pair or a whole `Cookie:` header also works). Checks it with Luma's `/user`, then stores it encrypted. `400` if Luma rejects it, `502` if Luma is unreachable. The value is never logged or returned |
 | `DELETE /api/luma/connect` | Forgets the stored Luma login, `204` |
-| `POST /api/luma/participants` | Body `{ "url": "https://luma.com/<event>" }`. Signed-in only (`401` otherwise). Returns the event, its guest count and its participants (`EventParticipants` in `app/lib/types.ts`): the full guest list (`source: "guest-list"`) when Luma is connected and the user can see it, else hosts and featured guests (`source: "public"`, with a `notice` saying why if Luma is connected). `400` for a non-Luma or malformed link, `422` if the page isn't an event, `401` with `code: "luma_auth"` if the stored Luma login has expired, `502` if the fetch fails |
-| `POST /api/luma/enrich` | Body `{ "url": "https://luma.com/<event>", "personId"?: "usr-…" }`. Signed-in only. With `personId`: `Enrichment` for that participant (`404` if they aren't on the event); this is what the UI uses. Without: `EnrichedEvent`, every participant enriched (slow). The server only looks up people from the event it fetched itself, so the client can't make it search or fetch arbitrary things |
+| `POST /api/luma/participants` | Body `{ "url": "https://luma.com/<event>" }`. Returns the event, its guest count and its participants (`EventParticipants` in `app/lib/types.ts`): the full guest list (`source: "guest-list"`) when Luma is connected and the user can see it, else hosts and featured guests (`source: "public"`, with a `notice` saying why if Luma is connected). `400` for a non-Luma or malformed link, `422` if the page isn't an event, `401` with `code: "luma_auth"` if the stored Luma login has expired, `502` if the fetch fails |
+| `POST /api/luma/enrich` | Body `{ "url": "https://luma.com/<event>", "personId"?: "usr-…" }`. With `personId`: `Enrichment` for that participant (`404` if they aren't on the event); this is what the UI uses. Without: `EnrichedEvent`, every participant enriched (slow). The server only looks up people from the event it fetched itself, so the client can't make it search or fetch arbitrary things |
 
-The page (`app/page.tsx`) calls `/api/auth/me` on mount, turns an `?error=`
-code into a readable message, and strips it from the URL so a reload doesn't
-bring it back. Client-side calls go through `app/lib/api.ts`.
-
-## How it works
-
-Standard OIDC authorization-code flow, hand-rolled on [`jose`](https://github.com/panva/jose):
-
-- **PKCE (S256)** — the code can't be redeemed without the verifier.
-- **`state`** — CSRF protection; a forged callback can't log your browser into
-  someone else's account.
-- **`nonce`** — ties the ID token to the request that started the flow.
-- The ID token's signature is verified against Google's JWKS, plus its issuer,
-  audience and nonce. Accounts with an unverified email are rejected. The
-  access token is deliberately discarded — this layer needs an identity, not
-  API access.
-- Scopes are `openid email profile`, with `prompt=select_account` so the
-  account chooser always shows.
-
-The `state`, `nonce` and verifier travel in one short-lived signed cookie
-(`oauth_tx`, 10 min) that is deleted the moment the callback reads it, valid
-or not.
-
-The session cookie (`session`, 7 days) is an HS256 JWT signed with
-`SESSION_SECRET` — **signed, not encrypted**. Its payload (`sub`, `email`,
-`name`, `picture`) is readable base64. That's fine for a name and an email;
-don't put anything sensitive in it. It's `HttpOnly`, `SameSite=Lax`, and
-`Secure` whenever `APP_URL` is `https://`.
+No route requires sign-in. Client-side calls go through `app/lib/api.ts`.
 
 ## Layer 2: Luma participants via you.com
 
 ### Event lookup (public)
 
-Signed in, the home page shows an input for a Luma event link
+The home page is an input for a Luma event link
 (`app/event-lookup.tsx`). It posts to `/api/luma/participants`, which calls
 `getEventParticipants()` in `app/lib/luma.ts`:
 
@@ -168,15 +116,14 @@ Luma's `/user` and stores it.
   Cloudflare Turnstile human check (`auth/additional-verification-required`)
   that only a real browser on luma.com can pass, so it was removed. Getting
   around that check isn't an option: it exists to stop exactly this.
-- *Reusing our Google sign-in.* Google issues tokens for one app; Luma only
-  accepts tokens issued to Luma.
+- *"Sign in with Google" for Luma.* Google issues tokens for one app; Luma
+  only accepts tokens issued to Luma.
 - *Reading the cookie from luma.com in another tab, or an iframe.* Browsers
   don't let one site read another's cookies, and Luma offers no OAuth /
   "Sign in with Luma" redirect back to other apps.
 
-What would make it work on phones too: store the encrypted login server-side
-keyed on the Google account (needs a small store such as Redis), so connecting
-once on a computer connects every device.
+The login is stored per browser, so a phone needs its own connection. Sharing
+one across devices would need app accounts plus a server-side store.
 
 **How the login is stored** (`app/lib/luma-session.ts`). That cookie value is
 a full credential for the user's Luma account, so it is treated like a
@@ -186,12 +133,11 @@ password:
   `SESSION_SECRET` (SHA-256 of a fixed label plus the secret), in an
   `HttpOnly`, `SameSite=Lax` cookie `luma_session`, `Secure` over HTTPS,
   scoped to `Path=/api/luma`, 30 days.
-- Bound to the app user who connected it (the JWE subject is their Google
-  `sub`): another account signing in on the same browser reads it as absent.
+- Per browser: there are no app accounts, so it belongs to whoever connected
+  it in that browser.
 - Sent **only to api.luma.com** — never to you.com — and never logged or
-  returned to the browser. Disconnecting or signing out deletes it. Rotating
+  returned to the browser. Disconnecting deletes it. Rotating
   `SESSION_SECRET` invalidates it.
-- Never put in the `session` cookie, which is signed but readable.
 
 **How the list is read** (`app/lib/luma-api.ts`, the endpoints luma.com's own
 pages call; undocumented, so read defensively):
@@ -335,38 +281,36 @@ goes through it.
 
 ## Verifying it works
 
-1. <http://localhost:3000> shows "Sign in with Google".
-2. Click → Google consent → you land back showing your real Gmail address.
-3. **Reload** — still signed in (this is what proves the cookie works, not just
-   React state).
-4. Sign out, then reload — still signed out.
-5. In DevTools, the `session` cookie is `HttpOnly` and invisible to
-   `document.cookie`.
+1. <http://localhost:3000> shows the event-link input.
+2. Paste a public Luma event link → hosts and featured guests appear, then
+   fill in with LinkedIn / X / website details.
+3. Optional: open **See the full guest list — connect Luma**, paste your
+   `luma.auth-session-key`, and look up an event you're registered for → the
+   full guest list.
+4. In DevTools, the `luma_session` cookie is `HttpOnly`, scoped to
+   `/api/luma`, and its value is ciphertext.
 
 ## Layout
 
 ```
 app/
   layout.tsx, globals.css      root layout; system font stack (no next/font/google)
-  page.tsx, page.module.css    sign in / sign out UI (client component)
+  page.tsx, page.module.css    the home page: header + event lookup
   event-lookup.tsx             Luma link input, enrichment, stars, filtered list (client component)
   luma-connect.tsx             connect / disconnect the user's Luma login (client component)
   people-filters.tsx           tabs, search, chips, sort; applyFilters() (client component)
   person-card.tsx              one participant: details, tags, star (client component)
   lib/
-    types.ts                   shared types: User, Participant, EventParticipants, Enrichment
-    api.ts                     client-side helpers: auth, event participants, enrichment
+    types.ts                   shared types: Participant, EventParticipants, Enrichment, LumaConnection
+    api.ts                     client-side helpers: event participants, enrichment, Luma connect
     classify.ts                role/industry tags + seniority from profile text (client-safe)
     env.ts                     env vars, read lazily               (server-only)
-    session.ts                 session + OAuth-transaction cookies (server-only)
-    google.ts                  authorization URL, PKCE, code exchange, ID-token verification (server-only)
     you.ts                     you.com Search + Contents client    (server-only)
     cache.ts                   query-keyed in-memory cache         (server-only)
     luma.ts                    event link → participants: public, or full guest list (server-only)
     luma-api.ts                api.luma.com client with the user's login (server-only)
     luma-session.ts            encrypted cookie holding the Luma login (server-only)
     enrich.ts                  participant → find LinkedIn, read LinkedIn/X/website (server-only)
-  api/auth/{login,callback/google,me,logout}/route.ts
   api/luma/{participants,enrich,connect}/route.ts
 next.config.ts                 cacheComponents + partialPrefetching enabled
 ```
@@ -376,14 +320,12 @@ from a client component.
 
 ## Where this is going
 
-Sign-in is layer 1 — it exists to identify the user so later layers can
-personalize. The app proper recommends **people to follow and events to
-attend**:
+The app proper recommends **people to follow and events to attend**:
 
 ```
-Google sign-in  →  the user's own job title (LinkedIn URL, or typed in)
+the user's own job title (LinkedIn URL, or typed in)
                         ↓
-Luma public event pages  →  candidate people (hosts, listed attendees)
+Luma event pages  →  candidate people (hosts, guests)
                         ↓
 you.com  →  each candidate's public LinkedIn headline → their title
                         ↓
@@ -408,9 +350,9 @@ against it, and recommendations.
 
 Two things this still needs from the user side:
 
-- **The user's own title.** Google OAuth returns `sub`, `email`, `name`,
-  `picture` and nothing else — no employer, no role. The user has to supply a
-  LinkedIn URL or type their title.
+- **The user's own title.** There are no accounts, so nothing is known about
+  the user. They'd supply a LinkedIn URL or type their title (kept in the
+  browser, like stars).
 - **Comparable titles.** Raw strings don't match: "SWE", "Senior Software
   Engineer II" and "Member of Technical Staff" are all the same role. Titles
   normalize to a canonical role plus a seniority level, and match on role with
@@ -422,50 +364,34 @@ one lookup serves everyone. you.com calls are slow and metered; this is a
 requirement, not an optimization. It's in memory for now; it needs a shared
 store (e.g. Redis) once there's more than one server instance.
 
-## Adding a database later
-
-One place to change: in `app/api/auth/callback/google/route.ts`, between
-`exchangeCode()` and `setSession()`, upsert the user by `sub` (Google's stable
-user ID — not the email, which can change) and put your own user ID in the
-session instead of the profile fields.
-
 ## Deploying to Vercel
 
 1. **Import the repo.** In the Vercel dashboard: Add New → Project → import
    `Ris345/hack-14`. The defaults (Next.js, `npm run build`) are right. Every
    merge to `main` then redeploys.
 2. **Environment variables** (Project → Settings → Environment Variables,
-   Production):
+   ticked for **Production**):
 
    | Variable | Value |
    |---|---|
-   | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | same Google client as dev is fine |
-   | `SESSION_SECRET` | a **new** one: `openssl rand -hex 32`. Don't reuse dev's |
-   | `APP_URL` | `https://<project>.vercel.app` (or your custom domain), no trailing slash |
    | `YDC_API_KEY` | your you.com key |
+   | `SESSION_SECRET` | a **new** one: `openssl rand -hex 32`. Don't reuse dev's. Needed for Connect Luma |
 
    Redeploy after adding them; env vars apply to new deployments only.
-3. **Google Cloud Console** → Credentials → the OAuth client → Authorized
-   redirect URIs: add `https://<project>.vercel.app/api/auth/callback/google`
-   (exactly, no trailing slash).
-4. **Who can sign in.** While the OAuth consent screen is in *Testing*, only
-   Google accounts listed under **Test users** (up to 100) can sign in. Add
-   each person who should see the demo there. That also keeps strangers from
-   spending your you.com credits.
 
-Then open the URL, sign in, and look up an event.
+Then open the URL and look up an event.
 
 On Vercel:
 
 - The Luma routes declare `maxDuration = 60` (a you.com page fetch can take up
   to ~50 s), which every Vercel plan allows.
+- Cookies are `Secure` automatically (`VERCEL=1`).
 - The cache (`app/lib/cache.ts`) is per serverless instance and resets on cold
   starts, so you.com is called a bit more often than in dev. A shared store
   (Redis) would fix that.
 
 ## Production notes
 
-- Set `APP_URL` to the real origin; cookies become `Secure` automatically.
-- Add `https://your-domain/api/auth/callback/google` to the Google client's redirect URIs.
-- Rotating `SESSION_SECRET` invalidates every existing session, and every
-  stored Luma login.
+- Anyone with the URL can use the app and spend your you.com credits. Add an
+  access gate before sharing it beyond a demo.
+- Rotating `SESSION_SECRET` invalidates every stored Luma login.

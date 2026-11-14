@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { getSession } from "@/app/lib/session";
 import {
   clearLumaSession,
   getLumaSession,
@@ -20,9 +19,7 @@ import type { LumaConnection } from "@/app/lib/types";
  */
 
 export async function GET() {
-  const user = await getSession();
-  if (!user) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
-  const luma = await getLumaSession(user.sub);
+  const luma = await getLumaSession();
   const body: LumaConnection = luma
     ? { connected: true, name: luma.name }
     : { connected: false };
@@ -30,9 +27,6 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const user = await getSession();
-  if (!user) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
-
   const body = (await request.json().catch(() => null)) as { cookie?: unknown } | null;
   const cookie = typeof body?.cookie === "string" ? cleanCookie(body.cookie) : "";
   if (!cookie) {
@@ -43,7 +37,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { name } = await storeLumaLogin(user.sub, cookie);
+    const { name } = await storeLumaLogin(cookie);
     const res: LumaConnection = { connected: true, name };
     return NextResponse.json(res);
   } catch (err) {
@@ -63,9 +57,6 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE() {
-  if (!(await getSession())) {
-    return NextResponse.json({ error: "Not signed in" }, { status: 401 });
-  }
   await clearLumaSession();
   return new NextResponse(null, { status: 204 });
 }

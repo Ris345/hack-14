@@ -1,11 +1,3 @@
-/** The signed-in user. Shared by the API routes and the client page. */
-export type User = {
-  sub: string;
-  email: string;
-  name: string;
-  picture: string | null;
-};
-
 /** Profile links a Luma user listed. Each is a full URL, or absent. */
 export type Socials = {
   luma?: string;
