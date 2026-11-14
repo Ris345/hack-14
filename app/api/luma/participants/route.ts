@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { getSession } from "@/app/lib/session";
 import { getLumaSession } from "@/app/lib/luma-session";
 import { getEventParticipants, LumaError } from "@/app/lib/luma";
 import { YouApiError } from "@/app/lib/you";
@@ -14,16 +13,12 @@ export const maxDuration = 60;
 /**
  * Body: `{ "url": "https://luma.com/<event>" }`. Returns `EventParticipants`.
  *
- * Signed-in users only: every new event costs a metered you.com call. If the
- * user connected their Luma login, the response is the full guest list they
- * can see (`source: "guest-list"`) instead of the public featured guests.
+ * Open to anyone: each new event costs a metered you.com call (cached for 6 h
+ * per event). If this browser has a Luma login connected, the response is the
+ * full guest list it can see (`source: "guest-list"`) instead of the public
+ * featured guests.
  */
 export async function POST(request: Request) {
-  const user = await getSession();
-  if (!user) {
-    return NextResponse.json({ error: "Not signed in" }, { status: 401 });
-  }
-
   const body = (await request.json().catch(() => null)) as {
     url?: unknown;
   } | null;
@@ -32,7 +27,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const luma = await getLumaSession(user.sub);
+    const luma = await getLumaSession();
     return NextResponse.json(await getEventParticipants(body.url, luma));
   } catch (err) {
     if (err instanceof LumaError) {

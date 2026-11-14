@@ -15,23 +15,17 @@ function required(name: string): string {
   return value;
 }
 
-export const googleClientId = () => required("GOOGLE_CLIENT_ID");
-export const googleClientSecret = () => required("GOOGLE_CLIENT_SECRET");
-
 /** you.com API key, from https://you.com/platform. Sent as the `X-API-Key` header. */
 export const ydcApiKey = () => required("YDC_API_KEY");
 
-/** Signs the session and OAuth-transaction cookies. `openssl rand -hex 32`. */
+/** Encrypts the stored Luma login (`luma-session.ts`). `openssl rand -hex 32`. */
 export const sessionSecret = () =>
   new TextEncoder().encode(required("SESSION_SECRET"));
 
-/** Public origin of this app. Must match the Google redirect URI's origin. */
-export function appUrl(): string {
-  return (process.env.APP_URL ?? "http://localhost:3000").replace(/\/$/, "");
-}
-
-/** Must match the Authorized redirect URI on the Google client, exactly. */
-export const redirectUri = () => `${appUrl()}/api/auth/callback/google`;
-
-/** Cookies are Secure only over HTTPS — localhost is plain HTTP in dev. */
-export const cookieSecure = () => appUrl().startsWith("https://");
+/**
+ * Cookies are `Secure` when served over HTTPS: on Vercel, or wherever `APP_URL`
+ * is an https origin. Local dev is plain HTTP, where a Secure cookie would be
+ * dropped by some browsers.
+ */
+export const cookieSecure = () =>
+  process.env.VERCEL === "1" || (process.env.APP_URL ?? "").startsWith("https://");

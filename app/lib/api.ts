@@ -1,6 +1,6 @@
-import type { Enrichment, EventParticipants, LumaConnection, User } from "./types";
+import type { Enrichment, EventParticipants, LumaConnection } from "./types";
 
-export type { Enrichment, EventParticipants, LumaConnection, User };
+export type { Enrichment, EventParticipants, LumaConnection };
 
 /** A failed API call. `code: "luma_auth"` means the stored Luma login stopped working. */
 export class ApiError extends Error {
@@ -60,22 +60,4 @@ export function fetchEnrichment(
  */
 export function fetchEventParticipants(url: string): Promise<EventParticipants> {
   return call("/api/luma/participants", postJson({ url }), "Lookup failed");
-}
-
-/**
- * The API routes live in this same app, so these are relative paths: no CORS,
- * and the session cookie rides along on same-origin requests by default.
- */
-export const loginUrl = "/api/auth/login";
-
-export async function fetchMe(): Promise<User | null> {
-  const res = await fetch("/api/auth/me", { cache: "no-store" });
-  if (res.status === 401) return null;
-  if (!res.ok) throw new Error(`/api/auth/me failed: ${res.status}`);
-  return res.json();
-}
-
-export async function logout(): Promise<void> {
-  const res = await fetch("/api/auth/logout", { method: "POST" });
-  if (!res.ok) throw new Error(`/api/auth/logout failed: ${res.status}`);
 }

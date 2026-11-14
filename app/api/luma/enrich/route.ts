@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { getSession } from "@/app/lib/session";
 import { getLumaSession } from "@/app/lib/luma-session";
 import { getEventParticipants, LumaError } from "@/app/lib/luma";
 import { enrichParticipant, enrichParticipants } from "@/app/lib/enrich";
@@ -32,11 +31,6 @@ export type EnrichedEvent = Omit<EventParticipants, "participants"> & {
  * fetch is cached, so the only new cost here is the enrichment itself.
  */
 export async function POST(request: Request) {
-  const user = await getSession();
-  if (!user) {
-    return NextResponse.json({ error: "Not signed in" }, { status: 401 });
-  }
-
   const body = (await request.json().catch(() => null)) as {
     url?: unknown;
     personId?: unknown;
@@ -56,7 +50,7 @@ export async function POST(request: Request) {
     // (Cached, so this costs nothing after the lookup itself.)
     const event = await getEventParticipants(
       body.url,
-      await getLumaSession(user.sub),
+      await getLumaSession(),
     );
 
     if (body.personId !== undefined) {
