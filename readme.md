@@ -12,7 +12,9 @@ session is a signed HttpOnly cookie.
   you are, sign out.
 - **Layer 2 — recommendations: in progress.** Signed-in users can paste a
   Luma event link and see its public participants (hosts and featured guests)
-  with their social links, fetched through the you.com Contents API. Each
+  with their social links, fetched through the you.com Contents API — or, after
+  connecting their Luma login, the event's full guest list as Luma shows it
+  to them as a registered guest. Each
   participant is then enriched from their LinkedIn, X and website (headline,
   location, bio, site summary); for people with no LinkedIn link, a
   conservative name search finds it. Tabs, search, role/industry filters,
@@ -91,8 +93,12 @@ command with `npm_config_cache="$TMPDIR/npm-cache"`.
 | `GET /api/auth/login` | Redirects to Google's consent screen. Must be a real navigation (`<a href>`), not a `fetch` |
 | `GET /api/auth/callback/google` | Verifies `state`, exchanges the code (PKCE), verifies the ID token, sets the session cookie, redirects home. On failure redirects to `/?error=access_denied` (user cancelled) or `/?error=auth_failed` (anything else) |
 | `GET /api/auth/me` | The signed-in user (`{ sub, email, name, picture }`) as JSON, or `401` |
-| `POST /api/auth/logout` | Clears the session cookie, `204`. POST only, so a prefetch or an `<img>` can't sign you out |
-| `POST /api/luma/participants` | Body `{ "url": "https://luma.com/<event>" }`. Signed-in only (`401` otherwise). Returns the event, its guest count and its public participants (`EventParticipants` in `app/lib/types.ts`). `400` for a non-Luma or malformed link, `422` if the page isn't a public event, `502` if the fetch fails |
+| `POST /api/auth/logout` | Clears the session cookie and the stored Luma login, `204`. POST only, so a prefetch or an `<img>` can't sign you out |
+| `GET /api/luma/connect` | `{ connected: true, name }` or `{ connected: false }`: whether this user has a Luma login stored. Signed-in only |
+| `POST /api/luma/connect` | Body `{ "cookie": "<luma.auth-session-key value>" }` (a `name=value` pair or a whole `Cookie:` header also works). Checks it with Luma's `/user`, then stores it encrypted. `400` if Luma rejects it, `502` if Luma is unreachable. The value is never logged or returned |
+| `DELETE /api/luma/connect` | Forgets the stored Luma login (and any half-finished sign-in), `204` |
+| `POST /api/luma/signin` | Sign in to Luma by emailed code, one step per request. Body `{ step: "start" \| "resend", email }`, `{ step: "code", email, code }`, `{ step: "password", email, password }` or `{ step: "two-factor", otp }`. Returns `{ next: "code" \| "password" \| "two-factor" }`, or `{ next: "done", connection }` once the login is stored. `400` with Luma's own message for a wrong code; `409` with `code: "verification_required"` or `"sso"` when the sign-in can only be done on luma.com (use the paste fallback) |
+| `POST /api/luma/participants` | Body `{ "url": "https://luma.com/<event>" }`. Signed-in only (`401` otherwise). Returns the event, its guest count and its participants (`EventParticipants` in `app/lib/types.ts`): the full guest list (`source: "guest-list"`) when Luma is connected and the user can see it, else hosts and featured guests (`source: "public"`, with a `notice` saying why if Luma is connected). `400` for a non-Luma or malformed link, `422` if the page isn't an event, `401` with `code: "luma_auth"` if the stored Luma login has expired, `502` if the fetch fails |
 | `POST /api/luma/enrich` | Body `{ "url": "https://luma.com/<event>", "personId"?: "usr-…" }`. Signed-in only. With `personId`: `Enrichment` for that participant (`404` if they aren't on the event); this is what the UI uses. Without: `EnrichedEvent`, every participant enriched (slow). The server only looks up people from the event it fetched itself, so the client can't make it search or fetch arbitrary things |
 
 The page (`app/page.tsx`) calls `/api/auth/me` on mount, turns an `?error=`
@@ -126,7 +132,7 @@ don't put anything sensitive in it. It's `HttpOnly`, `SameSite=Lax`, and
 
 ## Layer 2: Luma participants via you.com
 
-### Event lookup
+### Event lookup (public)
 
 Signed in, the home page shows an input for a Luma event link
 (`app/event-lookup.tsx`). It posts to `/api/luma/participants`, which calls
@@ -144,9 +150,103 @@ Signed in, the home page shows an input for a Luma event link
    Luma's stored handles (`/in/jdoe`, `@jdoe`, `jdoe`) into full LinkedIn, X,
    Instagram, TikTok, YouTube, website and Luma profile URLs.
 
-**Limitation: this is not the full guest list.** A public Luma page carries
-only the hosts and the ~10 guests Luma features; the rest are behind Luma's
-login. The UI shows "N featured guests of M registered" so this is visible.
+A public Luma page carries only the hosts and the ~10 guests Luma features;
+the rest are behind Luma's login. The UI shows "N featured guests of M
+registered" so this is visible, and offers to connect Luma.
+
+### Full guest list (Luma connected)
+
+Luma shows an event's full guest list to people **registered** for it, when
+the host has the guest list switched on. To read that list, the user connects
+their Luma login once (`app/luma-connect.tsx`). Two ways:
+
+**Default: sign in by emailed code** (`/api/luma/signin`) — works the same on a
+phone. The email is prefilled from the Google sign-in, since most people use
+the same address for Luma (a Luma account created with "Continue with Google"
+is still tied to that email, so the code flow works for it).
+
+1. `POST api.luma.com/auth/email/start-with-email {email}` — Luma emails a
+   6-digit code and says how the account signs in (`email-code` or
+   `password`).
+2. The user types the code (the input has `autocomplete="one-time-code"`, so
+   iOS and Android offer it straight from Mail) →
+   `POST /auth/email/sign-in-with-code {email, code}`. Password accounts use
+   `/auth/sign-in-with-password` instead.
+3. If the account has two-factor auth, Luma answers `step: "two_factor"` with a
+   `user_api_id` and `two_factor_shallow_secret`. Those are held for 10 minutes
+   in a second encrypted cookie (`luma_signin`, same scheme as below, consumed
+   on use) until the user enters their authenticator code →
+   `POST /auth/sign-in-with-two-factor`.
+4. Luma's response sets `luma.auth-session-key`; the server reads it from
+   `Set-Cookie` (verbatim), checks it with `/user`, and stores it as below.
+
+These are the calls luma.com's own sign-in dialog makes (with
+`x-luma-client-type: luma-web`). Two things make Luma refuse a server-side
+sign-in, and both send the user to the fallback: a Cloudflare Turnstile human
+check (`auth/additional-verification-required`), which only a browser can
+pass, and accounts that sign in through an organization's identity provider
+(`sso_config`). Our Google sign-in can't be reused for Luma: Google issues
+tokens for one app, and Luma only accepts ones issued to Luma.
+
+**Status: blocked in practice.** In testing (Nov 2026), Luma answered
+`start-with-email` from our server with the Turnstile check every time, so
+the app shows the "verify you're human" message and opens the paste
+fallback. Getting around that check isn't an option: it exists to stop
+exactly this kind of server-side sign-in. Until Luma offers a way for other
+apps to sign users in, the paste fallback is the working path.
+
+Codes, passwords and the session are passed straight through, never logged
+or stored apart from the encrypted login. This makes the app a sign-in screen
+for another service, which is fine for your own account but looks like
+phishing to anyone else — don't offer it to other people as is.
+
+**Fallback: paste the cookie** ("Other ways to connect", desktop): copy the
+value of `luma.auth-session-key` from luma.com in DevTools and paste it in.
+`/api/luma/connect` checks it against Luma's `/user` and stores it.
+
+**How the login is stored** (`app/lib/luma-session.ts`). That cookie value is
+a full credential for the user's Luma account, so it is treated like a
+password:
+
+- Encrypted (JWE, `dir` + `A256GCM`, via `jose`) with a key derived from
+  `SESSION_SECRET` (SHA-256 of a fixed label plus the secret), in an
+  `HttpOnly`, `SameSite=Lax` cookie `luma_session`, `Secure` over HTTPS,
+  scoped to `Path=/api/luma`, 30 days.
+- Bound to the app user who connected it (the JWE subject is their Google
+  `sub`): another account signing in on the same browser reads it as absent.
+- Sent **only to api.luma.com** — never to you.com — and never logged or
+  returned to the browser. Disconnecting or signing out deletes it. Rotating
+  `SESSION_SECRET` invalidates it.
+- Never put in the `session` cookie, which is signed but readable.
+
+**How the list is read** (`app/lib/luma-api.ts`, the endpoints luma.com's own
+pages call; undocumented, so read defensively):
+
+1. `GET api.luma.com/url?url=<slug>` with the login cookie returns the same
+   event data the public page embeds, plus `guest_data`: the user's own
+   registration, including their `ticket_key` and `approval_status`.
+2. If the host hid the list (`event.show_guest_list: false`), the user isn't
+   registered (no `ticket_key`), or their registration isn't approved, the
+   lookup returns the hosts and featured guests from that same data with a
+   `notice` explaining why. No you.com call is made.
+3. Otherwise `GET api.luma.com/event/get-guest-list?event_api_id=…&ticket_key=…&pagination_limit=100`
+   is followed through `next_cursor` until `has_more` is false (capped at 50
+   pages). Each entry's `user` has the same shape as a host, so the same
+   mapping applies. Hosts and duplicate tickets are dropped from the guests.
+4. A `401`/`403` from Luma surfaces as `401` with `code: "luma_auth"`, and the
+   UI shows the connect form again.
+
+The result is cached for 10 minutes **per Luma account** (key
+`luma:as-guest:<luma user id>:<slug>`), never shared: a guest list is only
+visible to people registered for the event.
+
+**Enriching a big list.** Reading profiles costs up to ~$0.008 a person and a
+few seconds each, so it runs automatically only for events of 40 people or
+fewer. Above that, filter or star first, then click **Read profiles for the N
+people shown**, which shows the worst-case cost.
+
+Luma's terms may restrict automated access, even with your own login. This is
+fine for a prototype; check them before offering it to other people.
 
 ### Enrichment
 
@@ -276,6 +376,7 @@ app/
   layout.tsx, globals.css      root layout; system font stack (no next/font/google)
   page.tsx, page.module.css    sign in / sign out UI (client component)
   event-lookup.tsx             Luma link input, enrichment, stars, filtered list (client component)
+  luma-connect.tsx             connect Luma: email-code sign-in, paste fallback, disconnect (client component)
   people-filters.tsx           tabs, search, chips, sort; applyFilters() (client component)
   person-card.tsx              one participant: details, tags, star (client component)
   lib/
@@ -287,10 +388,12 @@ app/
     google.ts                  authorization URL, PKCE, code exchange, ID-token verification (server-only)
     you.ts                     you.com Search + Contents client    (server-only)
     cache.ts                   query-keyed in-memory cache         (server-only)
-    luma.ts                    event link → public participants    (server-only)
+    luma.ts                    event link → participants: public, or full guest list (server-only)
+    luma-api.ts                api.luma.com client with the user's login (server-only)
+    luma-session.ts            encrypted cookies: the Luma login, a pending 2FA sign-in (server-only)
     enrich.ts                  participant → find LinkedIn, read LinkedIn/X/website (server-only)
   api/auth/{login,callback/google,me,logout}/route.ts
-  api/luma/{participants,enrich}/route.ts
+  api/luma/{participants,enrich,connect,signin}/route.ts
 next.config.ts                 cacheComponents + partialPrefetching enabled
 ```
 

@@ -2,7 +2,9 @@
 
 A single Next.js 16 app (App Router, Turbopack). No database. Layer 1 (Google
 sign-in) is done; layer 2 (recommendations) has the you.com client, cache, Luma
-participant lookup, enrichment and client-side filters so far. See `readme.md` for setup, the OAuth design and the roadmap.
+participant lookup (public, or the full guest list with the user's Luma login),
+enrichment and client-side filters so far. See `readme.md` for setup, the OAuth
+design and the roadmap.
 
 ## This is NOT the Next.js you know
 
@@ -24,6 +26,7 @@ Specifically:
 app/
   page.tsx                     sign in / sign out UI (client component)
   event-lookup.tsx             Luma link input, enrichment, stars, filtered list (client component)
+  luma-connect.tsx             connect Luma: email-code sign-in, paste fallback, disconnect (client component)
   people-filters.tsx           tabs, search, role/industry chips, sort (client component)
   person-card.tsx              one participant card: details, tags, star (client component)
   lib/types.ts                 shared types: User, Participant, EventParticipants, Enrichment
@@ -34,10 +37,12 @@ app/
   lib/google.ts                authorization URL, PKCE, code exchange, ID-token verification
   lib/you.ts                   you.com Search + Contents client
   lib/cache.ts                 query-keyed in-memory cache; every you.com call goes through it
-  lib/luma.ts                  Luma event link → public participants (parses __NEXT_DATA__)
+  lib/luma.ts                  event link → participants: public (you.com + __NEXT_DATA__) or full guest list
+  lib/luma-api.ts              api.luma.com client: email-code sign-in, then reads with the user's login
+  lib/luma-session.ts          encrypted HttpOnly cookies: that login, and a pending 2FA sign-in
   lib/enrich.ts                participant → find LinkedIn (Search), read LinkedIn/X/website (Contents)
   api/auth/{login,callback/google,me,logout}/route.ts
-  api/luma/{participants,enrich}/route.ts
+  api/luma/{participants,enrich,connect,signin}/route.ts
 ```
 
 ## Conventions
@@ -45,7 +50,7 @@ app/
 - Env vars are read through **getter functions** in `app/lib/env.ts`, never at
   module scope. `next build` evaluates route modules, so a missing variable must
   break a *request*, not the build.
-- `app/lib/{env,session,google,you,cache,luma,enrich}.ts` are server-only
+- `app/lib/{env,session,google,you,cache,luma,luma-api,luma-session,enrich}.ts` are server-only
   (`import "server-only"`). Never import them from a client component; the
   client uses `app/lib/api.ts`.
 - Outbound you.com calls go through `cached()` in `app/lib/cache.ts`, keyed on
@@ -54,6 +59,13 @@ app/
   and there is no CORS config.
 - The session cookie is **signed, not encrypted**. Its payload is readable
   base64 — never put anything sensitive in it.
+- The user's Luma login (`luma.auth-session-key`) is a full account
+  credential. It lives only in the encrypted `luma_session` cookie
+  (`app/lib/luma-session.ts`), is sent only to api.luma.com (never to you.com),
+  and must never be logged, returned to the browser, or put in an error. The
+  same goes for sign-in codes, passwords and 2FA secrets in `/api/luma/signin`.
+- Data fetched with someone's Luma login is theirs: cache it keyed on their
+  Luma user id, never in a shared key.
 - Avoid `next/font/google`: it fetches at build time, which fails in restricted
   network environments. The app uses a system font stack.
 

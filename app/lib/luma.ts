@@ -1,17 +1,32 @@
 import "server-only";
 
 import { contents } from "./you";
+import { cached, cacheKey } from "./cache";
+import {
+  getEventAsUser,
+  getGuestList,
+  LumaApiError,
+  LumaAuthError,
+} from "./luma-api";
+import type { LumaSession } from "./luma-session";
 import type { EventParticipants, Participant, Socials } from "./types";
 
 /**
- * Pull the public participants of a Luma event page, fetched through the
- * you.com Contents API.
+ * Get an event's participants, two ways:
  *
- * Luma renders event pages with Next.js and embeds the page data as JSON in
- * `<script id="__NEXT_DATA__">`. That JSON carries the hosts and the guests
- * Luma "features" publicly (about ten), each with whatever social handles they
- * listed. The full guest list is behind Luma's login and isn't on the page.
+ * - **Public** (anyone): the event page, fetched through the you.com Contents
+ *   API. Luma renders event pages with Next.js and embeds the page data as
+ *   JSON in `<script id="__NEXT_DATA__">`. That JSON carries the hosts and the
+ *   guests Luma "features" publicly (about ten), each with whatever social
+ *   handles they listed.
+ * - **Full guest list** (user connected their Luma login): the list Luma shows
+ *   a registered guest, read straight from Luma's API with their login. Needs
+ *   the user to be registered and the host to have the guest list switched on;
+ *   otherwise this falls back to the public view and says why.
  */
+
+/** A guest list can change by the minute while registration is open. */
+const GUEST_LIST_TTL_MS = 10 * 60 * 1000;
 
 const LUMA_HOSTS = new Set(["luma.com", "www.luma.com", "lu.ma", "www.lu.ma"]);
 const SLUG = /^[A-Za-z0-9_-]+$/;
@@ -21,6 +36,8 @@ export class LumaError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** `luma_auth`: the stored Luma login no longer works; the UI should ask to reconnect. */
+    readonly code?: "luma_auth",
   ) {
     super(message);
     this.name = "LumaError";
@@ -56,11 +73,20 @@ export function normalizeEventUrl(input: string): string {
   return `https://luma.com/${segments[0]}`;
 }
 
+/**
+ * With `luma`, try the full guest list first; without it (or when the user
+ * can't see the list), the public hosts and featured guests.
+ */
 export async function getEventParticipants(
   input: string,
+  luma?: LumaSession | null,
 ): Promise<EventParticipants> {
   const url = normalizeEventUrl(input);
+  if (luma) return getAsGuest(url, luma);
+  return getPublic(url);
+}
 
+async function getPublic(url: string): Promise<EventParticipants> {
   // Luma pages are heavy; give the crawler time to finish.
   const page = await contents(url, { formats: ["html"], crawlTimeout: 30 });
   if (!page?.html) {
@@ -74,12 +100,99 @@ export async function getEventParticipants(
       422,
     );
   }
+  return fromPageData(url, data, asArray(data.featured_guests), "public", null);
+}
 
+/**
+ * The event as this Luma user sees it. Cached per Luma account, never shared:
+ * a guest list is only visible to people registered for the event.
+ */
+function getAsGuest(url: string, luma: LumaSession): Promise<EventParticipants> {
+  const slug = url.slice(url.lastIndexOf("/") + 1);
+  return cached(
+    cacheKey("luma:as-guest", luma.userApiId, slug),
+    () => fetchAsGuest(url, slug, luma.cookie),
+    GUEST_LIST_TTL_MS,
+  );
+}
+
+async function fetchAsGuest(
+  url: string,
+  slug: string,
+  cookie: string,
+): Promise<EventParticipants> {
+  let data: Record<string, unknown> | null;
+  try {
+    data = await getEventAsUser(slug, cookie);
+  } catch (err) {
+    throw lumaFailure(err);
+  }
+  if (!data) throw new LumaError("That link isn't a Luma event.", 422);
+
+  const featured = asArray(data.featured_guests);
+  const event = (data.event ?? {}) as Record<string, unknown>;
+  const guest = (data.guest_data ?? {}) as Record<string, unknown>;
+  const ticketKey = str(guest.ticket_key);
+  const eventApiId = str(data.api_id);
+
+  // What Luma's own page requires before it shows the list.
+  if (event.show_guest_list === false) {
+    return fromPageData(url, data, featured, "public",
+      "The host has hidden this event's guest list, so only featured guests are shown.");
+  }
+  if (!ticketKey || !eventApiId) {
+    return fromPageData(url, data, featured, "public",
+      "You're not registered for this event, so Luma only shows its featured guests. Register to see everyone.");
+  }
+  if (guest.approval_status && guest.approval_status !== "approved") {
+    return fromPageData(url, data, featured, "public",
+      "Your registration isn't approved yet, so Luma only shows featured guests.");
+  }
+
+  let guests: unknown[];
+  try {
+    guests = await getGuestList(eventApiId, ticketKey, cookie);
+  } catch (err) {
+    throw lumaFailure(err);
+  }
+  return fromPageData(url, data, guests, "guest-list", null);
+}
+
+/** Turn a Luma API failure into a message for the UI. */
+function lumaFailure(err: unknown): LumaError {
+  if (err instanceof LumaAuthError) {
+    return new LumaError(
+      "Your Luma login has expired or was signed out. Reconnect Luma to see full guest lists.",
+      401,
+      "luma_auth",
+    );
+  }
+  if (err instanceof LumaApiError) {
+    console.error(err.message);
+  } else {
+    console.error("Luma API request failed:", err);
+  }
+  return new LumaError("Couldn't load the guest list from Luma. Try again.", 502);
+}
+
+/** Build the response from Luma's event data and whichever guest list we have. */
+function fromPageData(
+  url: string,
+  data: Record<string, unknown>,
+  guestUsers: unknown[],
+  source: EventParticipants["source"],
+  notice: string | null,
+): EventParticipants {
   const hosts = asArray(data.hosts).map((u) => toParticipant(u, "host"));
-  const hostIds = new Set(hosts.map((h) => h.id));
-  const guests = asArray(data.featured_guests)
-    .map((u) => toParticipant(u, "guest"))
-    .filter((g) => !hostIds.has(g.id));
+  const seen = new Set(hosts.map((h) => h.id));
+  const guests: Participant[] = [];
+  for (const u of guestUsers) {
+    const g = toParticipant(u, "guest");
+    // Hosts appear in the guest list too; and a person can hold two tickets.
+    if (g.id && seen.has(g.id)) continue;
+    if (g.id) seen.add(g.id);
+    guests.push(g);
+  }
 
   const event = (data.event ?? {}) as Record<string, unknown>;
   return {
@@ -90,6 +203,8 @@ export async function getEventParticipants(
     },
     guestCount: typeof data.guest_count === "number" ? data.guest_count : null,
     participants: [...hosts, ...guests],
+    source,
+    notice,
   };
 }
 
