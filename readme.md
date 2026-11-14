@@ -1,7 +1,12 @@
-# hack-14 — Google sign-in
+# hack-14
 
-A single Next.js app (App Router). Sign in with a Google account, see who you
-are, sign out. No database: the session is a signed HttpOnly cookie.
+Recommends people to follow and events to attend, by matching your job title
+against the people behind [Luma](https://lu.ma) events.
+
+**This repo currently contains layer 1 only: Google sign-in.** A single
+Next.js app (App Router) — sign in with a Google account, see who you are,
+sign out. No database: the session is a signed HttpOnly cookie. See
+[Where this is going](#where-this-is-going) for the rest.
 
 ## Setup
 
@@ -17,7 +22,7 @@ This part is interactive and has to be done by hand:
 4. Under **Authorized redirect URIs** add exactly:
 
    ```
-   http://localhost:3000/api/auth/callback
+   http://localhost:3000/api/auth/callback/google
    ```
 
    It must match character for character — a trailing slash breaks it.
@@ -55,7 +60,7 @@ Open <http://localhost:3000>.
 | Route | Behavior |
 |---|---|
 | `GET /api/auth/login` | Redirects to Google's consent screen. Must be a real navigation (`<a href>`), not a `fetch` |
-| `GET /api/auth/callback` | Verifies `state`, exchanges the code (PKCE), verifies the ID token, sets the session cookie, redirects home |
+| `GET /api/auth/callback/google` | Verifies `state`, exchanges the code (PKCE), verifies the ID token, sets the session cookie, redirects home |
 | `GET /api/auth/me` | The signed-in user as JSON, or `401` |
 | `POST /api/auth/logout` | Clears the session cookie, `204`. POST only, so a prefetch or an `<img>` can't sign you out |
 
@@ -99,12 +104,52 @@ app/
     env.ts                     env vars, read lazily so a missing one breaks a request, not the build
     session.ts                 session + OAuth-transaction cookies
     google.ts                  authorization URL, PKCE, code exchange, ID-token verification
-  api/auth/{login,callback,me,logout}/route.ts
+  api/auth/{login,callback/google,me,logout}/route.ts
 ```
+
+## Where this is going
+
+Sign-in is layer 1 — it exists to identify the user so later layers can
+personalize. The app proper recommends **people to follow and events to
+attend**:
+
+```
+Google sign-in  →  the user's own job title (LinkedIn URL, or typed in)
+                        ↓
+Luma public event pages  →  candidate people (hosts, listed attendees)
+                        ↓
+you.com  →  each candidate's public LinkedIn headline → their title
+                        ↓
+normalize to (role, seniority)  →  match on role, seniority ±1
+                        ↓
+recommend: people to follow + the events they'll be at
+                        ↓
+cache, keyed on the query — shared across users
+```
+
+**The signal is job-title overlap.** Two people match when their roles line up
+— both software engineers, both design architects. Deliberately *not*
+connection graphs or mutuals: those sit behind LinkedIn's login wall and no
+search-based tool reaches them. Public headlines are indexed and do.
+
+Two things this still needs:
+
+- **The user's own title.** Google OAuth returns `sub`, `email`, `name`,
+  `picture` and nothing else — no employer, no role. The user has to supply a
+  LinkedIn URL or type their title.
+- **Comparable titles.** Raw strings don't match: "SWE", "Senior Software
+  Engineer II" and "Member of Technical Staff" are all the same role. Titles
+  normalize to a canonical role plus a seniority level, and match on role with
+  a ±1 seniority tolerance — cheaper than embeddings and far easier to debug
+  when a recommendation looks wrong.
+
+The cache is keyed on the **query** (an event, a person), not on the user, so
+one lookup serves everyone. you.com calls are slow and metered; this is a
+requirement, not an optimization.
 
 ## Adding a database later
 
-One place to change: in `app/api/auth/callback/route.ts`, between
+One place to change: in `app/api/auth/callback/google/route.ts`, between
 `exchangeCode()` and `setSession()`, upsert the user by `sub` (Google's stable
 user ID — not the email, which can change) and put your own user ID in the
 session instead of the profile fields.
@@ -112,5 +157,5 @@ session instead of the profile fields.
 ## Production notes
 
 - Set `APP_URL` to the real origin; cookies become `Secure` automatically.
-- Add `https://your-domain/api/auth/callback` to the Google client's redirect URIs.
+- Add `https://your-domain/api/auth/callback/google` to the Google client's redirect URIs.
 - Rotating `SESSION_SECRET` invalidates every existing session.

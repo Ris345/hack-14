@@ -26,7 +26,7 @@ app/
   lib/env.ts                   env vars, read lazily
   lib/session.ts               session + OAuth-transaction cookies
   lib/google.ts                authorization URL, PKCE, code exchange, ID-token verification
-  api/auth/{login,callback,me,logout}/route.ts
+  api/auth/{login,callback/google,me,logout}/route.ts
 ```
 
 ## Conventions

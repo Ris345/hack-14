@@ -27,7 +27,8 @@ export function appUrl(): string {
   return (process.env.APP_URL ?? "http://localhost:3000").replace(/\/$/, "");
 }
 
-export const redirectUri = () => `${appUrl()}/api/auth/callback`;
+/** Must match the Authorized redirect URI on the Google client, exactly. */
+export const redirectUri = () => `${appUrl()}/api/auth/callback/google`;
 
 /** Cookies are Secure only over HTTPS — localhost is plain HTTP in dev. */
 export const cookieSecure = () => appUrl().startsWith("https://");
