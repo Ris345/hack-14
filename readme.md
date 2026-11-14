@@ -3,10 +3,18 @@
 Recommends people to follow and events to attend, by matching your job title
 against the people behind [Luma](https://lu.ma) events.
 
-**This repo currently contains layer 1 only: Google sign-in.** A single
-Next.js app (App Router) — sign in with a Google account, see who you are,
-sign out. No database: the session is a signed HttpOnly cookie. See
-[Where this is going](#where-this-is-going) for the rest.
+A single Next.js 16 app (App Router, Turbopack, React 19). No database: the
+session is a signed HttpOnly cookie.
+
+**Current state:**
+
+- **Layer 1 — Google sign-in: done.** Sign in with a Google account, see who
+  you are, sign out.
+- **Layer 2 — recommendations: foundation only.** A typed you.com search
+  client and a query-keyed cache exist in `app/lib/`, but nothing calls them
+  yet — there is no recommendation route or UI.
+
+See [Where this is going](#where-this-is-going) for the rest.
 
 ## Setup
 
@@ -47,6 +55,10 @@ Fill in `.env.local`:
 
 `.env.local` is gitignored. Never commit it.
 
+Env vars are read lazily through getters in `app/lib/env.ts`, so a missing
+one fails the request that needs it (with a message pointing at
+`.env.example`), not `next build`.
+
 ### 3. Run
 
 ```bash
@@ -56,14 +68,29 @@ npm run dev
 
 Open <http://localhost:3000>.
 
+### Checks
+
+```bash
+npx tsc --noEmit
+npx eslint .
+npm run build
+```
+
+If npm fails with an `EPERM … _cacache` "root-owned files" error, prefix the
+command with `npm_config_cache="$TMPDIR/npm-cache"`.
+
 ## Routes
 
 | Route | Behavior |
 |---|---|
 | `GET /api/auth/login` | Redirects to Google's consent screen. Must be a real navigation (`<a href>`), not a `fetch` |
-| `GET /api/auth/callback/google` | Verifies `state`, exchanges the code (PKCE), verifies the ID token, sets the session cookie, redirects home |
-| `GET /api/auth/me` | The signed-in user as JSON, or `401` |
+| `GET /api/auth/callback/google` | Verifies `state`, exchanges the code (PKCE), verifies the ID token, sets the session cookie, redirects home. On failure redirects to `/?error=access_denied` (user cancelled) or `/?error=auth_failed` (anything else) |
+| `GET /api/auth/me` | The signed-in user (`{ sub, email, name, picture }`) as JSON, or `401` |
 | `POST /api/auth/logout` | Clears the session cookie, `204`. POST only, so a prefetch or an `<img>` can't sign you out |
+
+The page (`app/page.tsx`) calls `/api/auth/me` on mount, turns an `?error=`
+code into a readable message, and strips it from the URL so a reload doesn't
+bring it back. Client-side calls go through `app/lib/api.ts`.
 
 ## How it works
 
@@ -74,16 +101,51 @@ Standard OIDC authorization-code flow, hand-rolled on [`jose`](https://github.co
   someone else's account.
 - **`nonce`** — ties the ID token to the request that started the flow.
 - The ID token's signature is verified against Google's JWKS, plus its issuer,
-  audience and nonce. The access token is deliberately discarded — this layer
-  needs an identity, not API access.
+  audience and nonce. Accounts with an unverified email are rejected. The
+  access token is deliberately discarded — this layer needs an identity, not
+  API access.
+- Scopes are `openid email profile`, with `prompt=select_account` so the
+  account chooser always shows.
 
 The `state`, `nonce` and verifier travel in one short-lived signed cookie
-(`oauth_tx`, 10 min) that is deleted the moment the callback reads it.
+(`oauth_tx`, 10 min) that is deleted the moment the callback reads it, valid
+or not.
 
-The session cookie is **signed, not encrypted** — its payload (`sub`, `email`,
+The session cookie (`session`, 7 days) is an HS256 JWT signed with
+`SESSION_SECRET` — **signed, not encrypted**. Its payload (`sub`, `email`,
 `name`, `picture`) is readable base64. That's fine for a name and an email;
 don't put anything sensitive in it. It's `HttpOnly`, `SameSite=Lax`, and
 `Secure` whenever `APP_URL` is `https://`.
+
+## Layer 2 foundation: you.com + cache
+
+Server-only building blocks for recommendations. Not wired to any route yet.
+
+**`app/lib/you.ts`** — a thin typed client for the you.com Web Search API
+(`POST https://ydc-index.io/v1/search`, `X-API-Key: $YDC_API_KEY`).
+Transport only; no Luma or LinkedIn knowledge lives here.
+
+- `search(query, { count, includeDomains, freshness, highlights })` returns
+  `WebResult[]`. `highlights: true` asks you.com to extract the matching
+  passages of each page — slower, but it's what makes results usable as text.
+- 30 s request timeout (highlight extraction crawls pages).
+- Non-2xx responses throw `YouApiError`, which carries `status` so callers
+  can tell a `429` apart.
+- `resultText(result)` returns the highlights, else the snippets, else the
+  description.
+
+**`app/lib/cache.ts`** — an in-memory cache keyed on the **query**, not the
+user, so one lookup serves everyone. Every `search()` goes through it.
+
+- `cached(key, fetch, ttlMs?)` caches the *promise*, so concurrent identical
+  queries make one upstream call. A rejected promise is evicted, so a
+  transient failure isn't cached.
+- Default TTL 6 hours; bounded at 1000 entries (expired first, then oldest).
+- Stored on `globalThis` so it survives Turbopack hot reloads in dev, which
+  would otherwise re-spend metered credits on every edit.
+- Per-process: it dies with the server and isn't shared across instances.
+  Moving to Redis means reimplementing `cached()` only.
+- `cacheKey(namespace, ...parts)` builds keys (parts trimmed and lowercased).
 
 ## Verifying it works
 
@@ -99,14 +161,22 @@ don't put anything sensitive in it. It's `HttpOnly`, `SameSite=Lax`, and
 
 ```
 app/
-  page.tsx                     sign in / sign out UI (client component)
+  layout.tsx, globals.css      root layout; system font stack (no next/font/google)
+  page.tsx, page.module.css    sign in / sign out UI (client component)
   lib/
-    types.ts                   the User type
-    env.ts                     env vars, read lazily so a missing one breaks a request, not the build
-    session.ts                 session + OAuth-transaction cookies
-    google.ts                  authorization URL, PKCE, code exchange, ID-token verification
+    types.ts                   the User type, shared by routes and the page
+    api.ts                     client-side helpers: loginUrl, fetchMe(), logout()
+    env.ts                     env vars, read lazily               (server-only)
+    session.ts                 session + OAuth-transaction cookies (server-only)
+    google.ts                  authorization URL, PKCE, code exchange, ID-token verification (server-only)
+    you.ts                     you.com search client               (server-only)
+    cache.ts                   query-keyed in-memory cache         (server-only)
   api/auth/{login,callback/google,me,logout}/route.ts
+next.config.ts                 cacheComponents + partialPrefetching enabled
 ```
+
+Modules marked server-only `import "server-only"` and must never be imported
+from a client component.
 
 ## Where this is going
 
@@ -133,7 +203,12 @@ cache, keyed on the query — shared across users
 connection graphs or mutuals: those sit behind LinkedIn's login wall and no
 search-based tool reaches them. Public headlines are indexed and do.
 
-Two things this still needs:
+Built so far: the you.com client and the query cache (see
+[Layer 2 foundation](#layer-2-foundation-youcom--cache)). Still to build: the
+Luma event lookup, headline → title extraction, title normalization and
+matching, a recommendations route, and the UI for it.
+
+Two things this still needs from the user side:
 
 - **The user's own title.** Google OAuth returns `sub`, `email`, `name`,
   `picture` and nothing else — no employer, no role. The user has to supply a
@@ -146,7 +221,8 @@ Two things this still needs:
 
 The cache is keyed on the **query** (an event, a person), not on the user, so
 one lookup serves everyone. you.com calls are slow and metered; this is a
-requirement, not an optimization.
+requirement, not an optimization. It's in memory for now; it needs a shared
+store (e.g. Redis) once there's more than one server instance.
 
 ## Adding a database later
 
