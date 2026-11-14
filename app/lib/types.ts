@@ -26,6 +26,29 @@ export type Participant = {
   socials: Socials;
 };
 
+/**
+ * What we learned about a participant from the public web, beyond what Luma
+ * carried. Every field is optional: a no-match is the common case, not an error.
+ */
+export type Profile = {
+  linkedin: string | null;
+  /** The LinkedIn headline, e.g. "Founder & CEO at Acme". */
+  headline: string | null;
+  /** A few sentences of public context, from you.com's extracted highlights. */
+  summary: string | null;
+  /**
+   * How much to trust that this profile is *this* person.
+   * `high` — the handle came from Luma itself, so there's nothing to guess.
+   * `medium` — a search hit whose title carries the participant's full name.
+   */
+  confidence: "high" | "medium";
+};
+
+export type EnrichedParticipant = Participant & {
+  /** `null` when no profile could be matched confidently. */
+  profile: Profile | null;
+};
+
 /** What `POST /api/luma/participants` returns. */
 export type EventParticipants = {
   event: { name: string; url: string; startAt: string | null };
