@@ -32,7 +32,7 @@ app/
   lib/you.ts                   you.com Search + Contents client
   lib/cache.ts                 query-keyed in-memory cache; every you.com call goes through it
   lib/luma.ts                  Luma event link → public participants (parses __NEXT_DATA__)
-  lib/enrich.ts                participant → LinkedIn/X/website details via you.com Contents
+  lib/enrich.ts                participant → find LinkedIn (Search), read LinkedIn/X/website (Contents)
   api/auth/{login,callback/google,me,logout}/route.ts
   api/luma/{participants,enrich}/route.ts
 ```

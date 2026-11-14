@@ -11,7 +11,7 @@ import {
 } from "./lib/api";
 import styles from "./page.module.css";
 
-/** How many participants to enrich at once. Each is up to 3 you.com fetches. */
+/** How many participants to enrich at once. Each is up to 1 search + 3 page fetches. */
 const ENRICH_CONCURRENCY = 4;
 
 type EnrichState =
@@ -61,9 +61,8 @@ export function EventLookup() {
 
   /** Enrich every participant with linkable profiles, a few at a time. */
   async function enrichAll(found: EventParticipants, gen: number) {
-    const queue = found.participants.filter(
-      (p) => p.id && (p.socials.linkedin || p.socials.twitter || p.socials.website),
-    );
+    // Everyone: people with no links may still have a LinkedIn we can find.
+    const queue = found.participants.filter((p) => p.id);
     const update = (id: string, state: EnrichState) => {
       if (gen !== generation.current) return;
       setEnrichment((prev) => ({ ...prev, [id]: state }));
@@ -212,8 +211,19 @@ function EnrichmentDetails({ state }: { state: EnrichState | undefined }) {
   }
 
   const { linkedin, twitter, website } = state.data;
-  const rows: { label: string; text: string }[] = [];
-  if (linkedin?.headline) rows.push({ label: "LinkedIn", text: linkedin.headline });
+  const rows: { label: string; text: string; href?: string; note?: string }[] = [];
+  if (linkedin && (linkedin.headline || linkedin.confidence === "medium")) {
+    rows.push({
+      label: "LinkedIn",
+      text: linkedin.headline ?? "Profile",
+      // Luma's own link is already in the socials row; a found one isn't.
+      href: linkedin.confidence === "medium" ? linkedin.url : undefined,
+      note:
+        linkedin.confidence === "medium"
+          ? "Found by name search — check it's them."
+          : undefined,
+    });
+  }
   if (linkedin?.location) rows.push({ label: "Location", text: linkedin.location });
   if (twitter?.bio) {
     const followers =
@@ -237,7 +247,16 @@ function EnrichmentDetails({ state }: { state: EnrichState | undefined }) {
       {rows.map((r) => (
         <div key={r.label} className={styles.enrichRow}>
           <dt>{r.label}</dt>
-          <dd>{r.text}</dd>
+          <dd>
+            {r.href ? (
+              <a href={r.href} target="_blank" rel="noreferrer">
+                {r.text}
+              </a>
+            ) : (
+              r.text
+            )}
+            {r.note ? <span className={styles.enrichNote}> {r.note}</span> : null}
+          </dd>
         </div>
       ))}
     </dl>

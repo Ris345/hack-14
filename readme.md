@@ -14,8 +14,9 @@ session is a signed HttpOnly cookie.
   Luma event link and see its public participants (hosts and featured guests)
   with their social links, fetched through the you.com Contents API. Each
   participant is then enriched from their LinkedIn, X and website (headline,
-  location, bio, site summary). Title matching and recommendations aren't
-  built yet.
+  location, bio, site summary); for people with no LinkedIn link, a
+  conservative name search finds it. Title matching and recommendations
+  aren't built yet.
 
 See [Where this is going](#where-this-is-going) for the rest.
 
@@ -91,7 +92,7 @@ command with `npm_config_cache="$TMPDIR/npm-cache"`.
 | `GET /api/auth/me` | The signed-in user (`{ sub, email, name, picture }`) as JSON, or `401` |
 | `POST /api/auth/logout` | Clears the session cookie, `204`. POST only, so a prefetch or an `<img>` can't sign you out |
 | `POST /api/luma/participants` | Body `{ "url": "https://luma.com/<event>" }`. Signed-in only (`401` otherwise). Returns the event, its guest count and its public participants (`EventParticipants` in `app/lib/types.ts`). `400` for a non-Luma or malformed link, `422` if the page isn't a public event, `502` if the fetch fails |
-| `POST /api/luma/enrich` | Body `{ "url": "https://luma.com/<event>", "personId": "usr-…" }`. Signed-in only. Returns `Enrichment` (in `app/lib/types.ts`) for that participant. The server looks the person up in the event and fetches only the links Luma lists for them, so the client can't make it fetch arbitrary URLs. `404` if the person isn't on that event |
+| `POST /api/luma/enrich` | Body `{ "url": "https://luma.com/<event>", "personId"?: "usr-…" }`. Signed-in only. With `personId`: `Enrichment` for that participant (`404` if they aren't on the event); this is what the UI uses. Without: `EnrichedEvent`, every participant enriched (slow). The server only looks up people from the event it fetched itself, so the client can't make it search or fetch arbitrary things |
 
 The page (`app/page.tsx`) calls `/api/auth/me` on mount, turns an `?error=`
 code into a readable message, and strips it from the URL so a reload doesn't
@@ -149,10 +150,22 @@ login. The UI shows "N featured guests of M registered" so this is visible.
 ### Enrichment
 
 Once the participant list is on screen, the page calls `/api/luma/enrich`
-for each person who has a LinkedIn, X or website link, four at a time, and
-fills in each card as results arrive. `enrichParticipant()` in
-`app/lib/enrich.ts` fetches those pages in parallel with the you.com
-Contents API (markdown, 20 s crawl timeout) and parses:
+for each person, four at a time, and fills in each card as results arrive.
+`enrichParticipant()` in `app/lib/enrich.ts` works in two steps.
+
+**1. Find their LinkedIn.** If Luma lists it, it's used as-is
+(`confidence: "high"`) and no search is spent. Otherwise you.com Search runs
+over `linkedin.com` for `"<name> <first clause of their bio> LinkedIn"`, and a
+result only counts if it's a personal profile (`/in/<slug>`) **and** its title
+contains every part of the person's name (accents and punctuation ignored).
+That match is `confidence: "medium"`, and the UI labels it "Found by name
+search — check it's them". Anything less resolves to no LinkedIn at all: a
+wrong profile is worse than none. Names under three characters aren't
+searched.
+
+**2. Read their pages.** The LinkedIn profile, X profile and website are
+fetched in parallel with the you.com Contents API (markdown, 20 s crawl
+timeout) and parsed:
 
 | Source | Fields | From you.com's markdown |
 |---|---|---|
@@ -162,9 +175,16 @@ Contents API (markdown, 20 s crawl timeout) and parses:
 
 Every fetch is best-effort: a page that fails (login wall, timeout) just
 leaves its section out, and a format change yields `null` fields rather than
-an error. Long text is clipped to 280 characters. Pages are cached per URL,
-so someone who appears at several events is fetched once. Cost is up to three
-pages per person (about $0.003 at $1 per 1,000 pages).
+an error. If a found LinkedIn page can't be read, the headline and summary
+from the search result are used instead. Long text is clipped to 280
+characters. Searches are cached per query and pages per URL, so someone who
+appears at several events is looked up once. Cost per person is up to three
+pages (about $0.003 at $1 per 1,000 pages), plus one search for people
+without a LinkedIn link. Search runs without highlights, since the matched
+profile is read with the Contents API anyway.
+
+`enrichParticipants(list)` does the same for a whole list, four at a time,
+preserving order (used by the route when no `personId` is given).
 
 Instagram, TikTok and YouTube links are shown but not enriched yet.
 
@@ -227,7 +247,7 @@ app/
     you.ts                     you.com Search + Contents client    (server-only)
     cache.ts                   query-keyed in-memory cache         (server-only)
     luma.ts                    event link → public participants    (server-only)
-    enrich.ts                  participant → LinkedIn/X/website details (server-only)
+    enrich.ts                  participant → find LinkedIn, read LinkedIn/X/website (server-only)
   api/auth/{login,callback/google,me,logout}/route.ts
   api/luma/{participants,enrich}/route.ts
 next.config.ts                 cacheComponents + partialPrefetching enabled

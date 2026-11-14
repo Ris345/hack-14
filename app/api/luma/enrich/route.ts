@@ -1,15 +1,26 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/app/lib/session";
 import { getEventParticipants, LumaError } from "@/app/lib/luma";
-import { enrichParticipant } from "@/app/lib/enrich";
+import { enrichParticipant, enrichParticipants } from "@/app/lib/enrich";
+import { YouApiError } from "@/app/lib/you";
+import type { EnrichedParticipant, EventParticipants } from "@/app/lib/types";
+
+export type EnrichedEvent = Omit<EventParticipants, "participants"> & {
+  participants: EnrichedParticipant[];
+};
 
 /**
- * Body: `{ "url": "https://luma.com/<event>", "personId": "usr-…" }`.
- * Returns `Enrichment` for that participant.
+ * Body: `{ "url": "https://luma.com/<event>", "personId"?: "usr-…" }`.
  *
- * The client names a person, not URLs: the server looks them up in the
- * (cached) event data and only fetches the links Luma lists for them. So this
- * route can't be used to make us fetch arbitrary pages on someone's dime.
+ * - With `personId`: returns `Enrichment` for that one participant. The UI
+ *   calls it once per person so each card fills in as soon as it's ready.
+ * - Without: returns `EnrichedEvent`, every participant enriched (slow — up to
+ *   a search plus three page fetches per person, four people at a time).
+ *
+ * Takes the event URL rather than names or links so the people being looked
+ * up are ones we fetched ourselves — a client-supplied list would let anyone
+ * spend our you.com budget on arbitrary searches and pages. The participant
+ * fetch is cached, so the only new cost here is the enrichment itself.
  */
 export async function POST(request: Request) {
   if (!(await getSession())) {
@@ -20,28 +31,43 @@ export async function POST(request: Request) {
     url?: unknown;
     personId?: unknown;
   } | null;
-  if (typeof body?.url !== "string" || typeof body.personId !== "string") {
+  if (typeof body?.url !== "string" || !body.url.trim()) {
+    return NextResponse.json({ error: "Missing url" }, { status: 400 });
+  }
+  if (body.personId !== undefined && typeof body.personId !== "string") {
     return NextResponse.json(
-      { error: "Expected { url, personId }" },
+      { error: "personId must be a string" },
       { status: 400 },
     );
   }
 
   try {
-    const { participants } = await getEventParticipants(body.url);
-    const person = participants.find((p) => p.id === body.personId);
-    if (!person) {
-      return NextResponse.json(
-        { error: "No such participant on that event" },
-        { status: 404 },
-      );
+    const event = await getEventParticipants(body.url);
+
+    if (body.personId !== undefined) {
+      const person = event.participants.find((p) => p.id === body.personId);
+      if (!person) {
+        return NextResponse.json(
+          { error: "No such participant on that event" },
+          { status: 404 },
+        );
+      }
+      return NextResponse.json(await enrichParticipant(person));
     }
-    return NextResponse.json(await enrichParticipant(person));
+
+    return NextResponse.json({
+      ...event,
+      participants: await enrichParticipants(event.participants),
+    } satisfies EnrichedEvent);
   } catch (err) {
     if (err instanceof LumaError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
     console.error("Enrichment failed:", err);
-    return NextResponse.json({ error: "Enrichment failed" }, { status: 502 });
+    const message =
+      err instanceof YouApiError && err.status === 429
+        ? "you.com rate limit hit. Try again in a minute."
+        : "Couldn't enrich that event. Try again.";
+    return NextResponse.json({ error: message }, { status: 502 });
   }
 }
