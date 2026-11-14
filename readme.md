@@ -43,6 +43,7 @@ Fill in `.env.local`:
 | `GOOGLE_CLIENT_SECRET` | from the Console |
 | `SESSION_SECRET` | `openssl rand -hex 32`; signs the cookies |
 | `APP_URL` | `http://localhost:3000` in dev; the public origin in production |
+| `YDC_API_KEY` | you.com API key, from <https://you.com/platform>; layer 2 only, sign-in works without it |
 
 `.env.local` is gitignored. Never commit it.
 

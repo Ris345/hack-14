@@ -18,6 +18,9 @@ function required(name: string): string {
 export const googleClientId = () => required("GOOGLE_CLIENT_ID");
 export const googleClientSecret = () => required("GOOGLE_CLIENT_SECRET");
 
+/** you.com API key, from https://you.com/platform. Sent as the `X-API-Key` header. */
+export const ydcApiKey = () => required("YDC_API_KEY");
+
 /** Signs the session and OAuth-transaction cookies. `openssl rand -hex 32`. */
 export const sessionSecret = () =>
   new TextEncoder().encode(required("SESSION_SECRET"));
