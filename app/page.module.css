@@ -469,17 +469,3 @@
 .enrichPrompt .button {
   margin-top: 0;
 }
-
-.fallback {
-  margin-top: 12px;
-}
-
-.fallback summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.fallback[open] summary {
-  margin-bottom: 8px;
-}

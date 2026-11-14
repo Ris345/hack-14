@@ -62,7 +62,7 @@ function saveStars(eventUrl: string, ids: string[]) {
 }
 
 /** Paste a Luma event link, see its participants, then narrow them down. */
-export function EventLookup({ email }: { email: string }) {
+export function EventLookup() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -193,7 +193,7 @@ export function EventLookup({ email }: { email: string }) {
 
   return (
     <section className={styles.lookup}>
-      <LumaConnect connection={luma} onChange={setLuma} defaultEmail={email} />
+      <LumaConnect connection={luma} onChange={setLuma} />
 
       <form className={styles.form} onSubmit={onSubmit}>
         <input

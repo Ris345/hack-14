@@ -26,7 +26,7 @@ Specifically:
 app/
   page.tsx                     sign in / sign out UI (client component)
   event-lookup.tsx             Luma link input, enrichment, stars, filtered list (client component)
-  luma-connect.tsx             connect Luma: email-code sign-in, paste fallback, disconnect (client component)
+  luma-connect.tsx             connect / disconnect the user's Luma login (paste the cookie) (client component)
   people-filters.tsx           tabs, search, role/industry chips, sort (client component)
   person-card.tsx              one participant card: details, tags, star (client component)
   lib/types.ts                 shared types: User, Participant, EventParticipants, Enrichment
@@ -38,11 +38,11 @@ app/
   lib/you.ts                   you.com Search + Contents client
   lib/cache.ts                 query-keyed in-memory cache; every you.com call goes through it
   lib/luma.ts                  event link → participants: public (you.com + __NEXT_DATA__) or full guest list
-  lib/luma-api.ts              api.luma.com client: email-code sign-in, then reads with the user's login
-  lib/luma-session.ts          encrypted HttpOnly cookies: that login, and a pending 2FA sign-in
+  lib/luma-api.ts              api.luma.com client, authenticated with the user's Luma login
+  lib/luma-session.ts          encrypted HttpOnly cookie holding that login
   lib/enrich.ts                participant → find LinkedIn (Search), read LinkedIn/X/website (Contents)
   api/auth/{login,callback/google,me,logout}/route.ts
-  api/luma/{participants,enrich,connect,signin}/route.ts
+  api/luma/{participants,enrich,connect}/route.ts
 ```
 
 ## Conventions
@@ -62,8 +62,11 @@ app/
 - The user's Luma login (`luma.auth-session-key`) is a full account
   credential. It lives only in the encrypted `luma_session` cookie
   (`app/lib/luma-session.ts`), is sent only to api.luma.com (never to you.com),
-  and must never be logged, returned to the browser, or put in an error. The
-  same goes for sign-in codes, passwords and 2FA secrets in `/api/luma/signin`.
+  and must never be logged, returned to the browser, or put in an error.
+- Don't sign in to Luma from the server: Luma requires a browser-only
+  Turnstile check, and getting around it is off the table.
+- Routes that call you.com or Luma set `export const maxDuration = 60` so
+  Vercel doesn't cut them off.
 - Data fetched with someone's Luma login is theirs: cache it keyed on their
   Luma user id, never in a shared key.
 - Avoid `next/font/google`: it fetches at build time, which fails in restricted

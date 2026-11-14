@@ -10,8 +10,6 @@ import type { LumaConnection } from "@/app/lib/types";
 
 /**
  * Connect the user's Luma login so lookups can return full guest lists.
- * (This is the paste-a-cookie fallback; the default is the email-code
- * sign-in at `/api/luma/signin`.)
  *
  * - `GET`    → `LumaConnection`: whether a Luma login is stored, and whose.
  * - `POST`   `{ "cookie": "<luma.auth-session-key>" }` → checks it with Luma,
