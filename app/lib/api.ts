@@ -1,6 +1,23 @@
-import type { User } from "./types";
+import type { EventParticipants, User } from "./types";
 
-export type { User };
+export type { EventParticipants, User };
+export type { Participant, Socials } from "./types";
+
+/** Look up an event's public participants. Throws with a message fit for the UI. */
+export async function fetchEventParticipants(
+  url: string,
+): Promise<EventParticipants> {
+  const res = await fetch("/api/luma/participants", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(json?.error ?? `Lookup failed (${res.status}).`);
+  }
+  return json as EventParticipants;
+}
 
 /**
  * The API routes live in this same app, so these are relative paths: no CORS,

@@ -3,13 +3,13 @@ import { ydcApiKey } from "./env";
 import { cached, cacheKey } from "./cache";
 
 /**
- * Thin typed client for the you.com Web Search API.
+ * Thin typed client for the you.com Web Search and Contents APIs.
  *
  * Transport only — no domain knowledge of Luma or LinkedIn lives here. Every
  * call goes through the query-keyed cache, because results are metered and
  * identical for every user.
  *
- * POST https://ydc-index.io/v1/search, auth via the `X-API-Key` header.
+ * POST https://ydc-index.io/v1/{search,contents}, auth via the `X-API-Key` header.
  */
 
 const SEARCH_URL = "https://ydc-index.io/v1/search";
@@ -122,6 +122,80 @@ async function searchUncached(
 
   const json = (await res.json()) as SearchResponse;
   return json.results?.web ?? [];
+}
+
+const CONTENTS_URL = "https://ydc-index.io/v1/contents";
+
+export type ContentsFormat = "markdown" | "html" | "metadata";
+
+export type ContentsOptions = {
+  /** Default `["markdown"]`. Each extra format adds processing time. */
+  formats?: ContentsFormat[];
+  /** Per-URL crawl timeout in seconds, 1–60. you.com's default is 10; JS-heavy pages want 20–30. */
+  crawlTimeout?: number;
+  /** Max age of you.com's own cached copy, in seconds. `0` forces a re-fetch. */
+  maxAge?: number;
+};
+
+export type PageContents = {
+  url: string;
+  title?: string | null;
+  /** `null` when the page couldn't be fetched (login wall, 404). */
+  markdown?: string | null;
+  html?: string | null;
+  metadata?: { site_name?: string | null; favicon_url?: string | null } | null;
+};
+
+/**
+ * Fetch the contents of one page via the you.com Contents API
+ * (`POST /v1/contents`, $1 per 1,000 pages). Cached on the URL and options.
+ *
+ * Returns `null` when you.com answered but couldn't fetch the page.
+ */
+export function contents(
+  url: string,
+  options: ContentsOptions = {},
+): Promise<PageContents | null> {
+  const formats = options.formats ?? ["markdown"];
+  const key = cacheKey(
+    "you:contents",
+    url,
+    [...formats].sort().join(","),
+    String(options.crawlTimeout ?? ""),
+    String(options.maxAge ?? ""),
+  );
+  return cached(key, () => contentsUncached(url, formats, options));
+}
+
+async function contentsUncached(
+  url: string,
+  formats: ContentsFormat[],
+  options: ContentsOptions,
+): Promise<PageContents | null> {
+  const body: Record<string, unknown> = { urls: [url], formats };
+  if (options.crawlTimeout !== undefined) body.crawl_timeout = options.crawlTimeout;
+  if (options.maxAge !== undefined) body.max_age = options.maxAge;
+
+  const res = await fetch(CONTENTS_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-Key": ydcApiKey(),
+    },
+    body: JSON.stringify(body),
+    // Crawl timeout plus headroom for you.com's own processing.
+    signal: AbortSignal.timeout(((options.crawlTimeout ?? 10) + 20) * 1000),
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    throw new YouApiError(res.status, await res.text().catch(() => ""));
+  }
+
+  const json = (await res.json()) as PageContents[];
+  const page = Array.isArray(json) ? json[0] : undefined;
+  if (!page || (page.html == null && page.markdown == null)) return null;
+  return page;
 }
 
 /** The text of a result worth reading: highlights if we asked for them, else the snippets. */

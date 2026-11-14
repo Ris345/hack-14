@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { fetchMe, loginUrl, logout, type User } from "./lib/api";
+import { EventLookup } from "./event-lookup";
 import styles from "./page.module.css";
 
 /** Errors the callback route can hand back on /?error=… when sign-in fails. */
@@ -101,6 +102,8 @@ export default function Home() {
 
         {error ? <p className={styles.error}>{error}</p> : null}
       </div>
+
+      {user ? <EventLookup /> : null}
     </main>
   );
 }
