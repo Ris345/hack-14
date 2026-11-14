@@ -1,41 +1,60 @@
 "use client";
 
-import { useRef, useState, type FormEvent } from "react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 import {
   fetchEnrichment,
   fetchEventParticipants,
-  type Enrichment,
   type EventParticipants,
-  type Participant,
-  type Socials,
 } from "./lib/api";
+import { classify } from "./lib/classify";
+import {
+  applyFilters,
+  DEFAULT_FILTERS,
+  FilterBar,
+  isFiltered,
+  type FilterState,
+  type Row,
+} from "./people-filters";
+import { PersonCard, type EnrichState } from "./person-card";
 import styles from "./page.module.css";
 
 /** How many participants to enrich at once. Each is up to 1 search + 3 page fetches. */
 const ENRICH_CONCURRENCY = 4;
 
-type EnrichState =
-  | { status: "loading" }
-  | { status: "done"; data: Enrichment }
-  | { status: "error" };
+/**
+ * Stars ("want to meet") live in this browser only, per event. There's no
+ * database, and they're a personal shortlist, not something to sync.
+ */
+const starKey = (eventUrl: string) => `hack14:starred:${eventUrl}`;
 
-const SOCIAL_LABELS: Record<keyof Socials, string> = {
-  linkedin: "LinkedIn",
-  twitter: "X",
-  instagram: "Instagram",
-  tiktok: "TikTok",
-  youtube: "YouTube",
-  website: "Website",
-  luma: "Luma",
-};
+function loadStars(eventUrl: string): string[] {
+  try {
+    const raw = window.localStorage.getItem(starKey(eventUrl));
+    const ids: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    // Private mode, blocked storage, or bad JSON: start empty.
+    return [];
+  }
+}
 
-/** Paste a Luma event link, see its public participants and their socials. */
+function saveStars(eventUrl: string, ids: string[]) {
+  try {
+    window.localStorage.setItem(starKey(eventUrl), JSON.stringify(ids));
+  } catch {
+    // Storage unavailable: stars still work for this session.
+  }
+}
+
+/** Paste a Luma event link, see its public participants, then narrow them down. */
 export function EventLookup() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<EventParticipants | null>(null);
   const [enrichment, setEnrichment] = useState<Record<string, EnrichState>>({});
+  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
+  const [starred, setStarred] = useState<string[]>([]);
   /** Bumped per lookup, so a slow enrichment from the last event can't land on this one. */
   const generation = useRef(0);
 
@@ -50,6 +69,8 @@ export function EventLookup() {
       const found = await fetchEventParticipants(url);
       if (gen !== generation.current) return;
       setResult(found);
+      setFilters(DEFAULT_FILTERS);
+      setStarred(loadStars(found.event.url));
       void enrichAll(found, gen);
     } catch (err) {
       setResult(null);
@@ -59,7 +80,7 @@ export function EventLookup() {
     }
   }
 
-  /** Enrich every participant with linkable profiles, a few at a time. */
+  /** Enrich every participant, a few at a time. */
   async function enrichAll(found: EventParticipants, gen: number) {
     // Everyone: people with no links may still have a LinkedIn we can find.
     const queue = found.participants.filter((p) => p.id);
@@ -89,8 +110,42 @@ export function EventLookup() {
     );
   }
 
-  const hosts = result?.participants.filter((p) => p.role === "host") ?? [];
-  const guests = result?.participants.filter((p) => p.role === "guest") ?? [];
+  function toggleStar(id: string) {
+    if (!result) return;
+    const next = starred.includes(id)
+      ? starred.filter((x) => x !== id)
+      : [...starred, id];
+    setStarred(next);
+    saveStars(result.event.url, next);
+  }
+
+  function toggleTag(group: "roles" | "topics", id: string) {
+    const list = filters[group];
+    setFilters({
+      ...filters,
+      [group]: list.includes(id) ? list.filter((x) => x !== id) : [...list, id],
+    });
+  }
+
+  // Re-tag as enrichment arrives; cheap, it's a few dozen people.
+  const rows: Row[] = useMemo(() => {
+    if (!result) return [];
+    return result.participants.map((person) => {
+      const state = enrichment[person.id];
+      const data = state?.status === "done" ? state.data : undefined;
+      return {
+        person,
+        info: classify(person, data),
+        followers: data?.twitter?.followers ?? null,
+        starred: starred.includes(person.id),
+      };
+    });
+  }, [result, enrichment, starred]);
+
+  const visible = useMemo(() => applyFilters(rows, filters), [rows, filters]);
+  const enriching = Object.values(enrichment).some((s) => s.status === "loading");
+  const hostCount = result?.participants.filter((p) => p.role === "host").length ?? 0;
+  const guestCount = (result?.participants.length ?? 0) - hostCount;
 
   return (
     <section className={styles.lookup}>
@@ -126,139 +181,44 @@ export function EventLookup() {
             </a>
           </h2>
           <p className={styles.muted}>
-            {hosts.length} host{hosts.length === 1 ? "" : "s"} · {guests.length}{" "}
-            featured guest{guests.length === 1 ? "" : "s"}
+            {hostCount} host{hostCount === 1 ? "" : "s"} · {guestCount} featured
+            guest{guestCount === 1 ? "" : "s"}
             {result.guestCount !== null
               ? ` of ${result.guestCount} registered. Luma only shows the full guest list to signed-in guests.`
               : ""}
           </p>
-          <PeopleList title="Hosts" people={hosts} enrichment={enrichment} />
-          <PeopleList
-            title="Featured guests"
-            people={guests}
-            enrichment={enrichment}
+
+          <FilterBar
+            rows={rows}
+            filters={filters}
+            onChange={setFilters}
+            enriching={enriching}
           />
+
+          {visible.length ? (
+            <ul className={styles.people}>
+              {visible.map(({ person, info, starred: isStarred }) => (
+                <PersonCard
+                  key={person.id || person.name}
+                  person={person}
+                  info={info}
+                  enrichment={enrichment[person.id]}
+                  starred={isStarred}
+                  onToggleStar={() => toggleStar(person.id)}
+                  activeTags={[...filters.roles, ...filters.topics]}
+                  onTagClick={toggleTag}
+                />
+              ))}
+            </ul>
+          ) : (
+            <p className={styles.empty}>
+              {filters.tab === "starred" && !isFiltered(filters)
+                ? "No one starred yet. Tap ☆ on anyone you want to meet."
+                : "No one matches these filters."}
+            </p>
+          )}
         </div>
       ) : null}
     </section>
-  );
-}
-
-function PeopleList({
-  title,
-  people,
-  enrichment,
-}: {
-  title: string;
-  people: Participant[];
-  enrichment: Record<string, EnrichState>;
-}) {
-  if (!people.length) return null;
-  return (
-    <>
-      <h3 className={styles.listTitle}>{title}</h3>
-      <ul className={styles.people}>
-        {people.map((p) => (
-          <li key={p.id || p.name} className={styles.person}>
-            {p.avatarUrl ? (
-              // Arbitrary CDN host; next/image would need it allow-listed.
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                className={styles.personAvatar}
-                src={p.avatarUrl}
-                alt=""
-                width={40}
-                height={40}
-                referrerPolicy="no-referrer"
-              />
-            ) : (
-              <div className={styles.personAvatar} aria-hidden />
-            )}
-            <div className={styles.personBody}>
-              <div className={styles.name}>{p.name}</div>
-              {p.bio ? <div className={styles.bio}>{p.bio}</div> : null}
-              <EnrichmentDetails state={enrichment[p.id]} />
-              <div className={styles.socials}>
-                {(Object.keys(SOCIAL_LABELS) as (keyof Socials)[])
-                  .filter((k) => p.socials[k])
-                  .map((k) => (
-                    <a
-                      key={k}
-                      href={p.socials[k]}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {SOCIAL_LABELS[k]}
-                    </a>
-                  ))}
-              </div>
-            </div>
-          </li>
-        ))}
-      </ul>
-    </>
-  );
-}
-
-/** What the person's LinkedIn, X and website say, as it arrives. */
-function EnrichmentDetails({ state }: { state: EnrichState | undefined }) {
-  if (!state) return null;
-  if (state.status === "loading") {
-    return <div className={styles.enrichPending}>Reading their profiles…</div>;
-  }
-  if (state.status === "error") {
-    return <div className={styles.enrichPending}>Couldn’t read their profiles.</div>;
-  }
-
-  const { linkedin, twitter, website } = state.data;
-  const rows: { label: string; text: string; href?: string; note?: string }[] = [];
-  if (linkedin && (linkedin.headline || linkedin.confidence === "medium")) {
-    rows.push({
-      label: "LinkedIn",
-      text: linkedin.headline ?? "Profile",
-      // Luma's own link is already in the socials row; a found one isn't.
-      href: linkedin.confidence === "medium" ? linkedin.url : undefined,
-      note:
-        linkedin.confidence === "medium"
-          ? "Found by name search — check it's them."
-          : undefined,
-    });
-  }
-  if (linkedin?.location) rows.push({ label: "Location", text: linkedin.location });
-  if (twitter?.bio) {
-    const followers =
-      twitter.followers !== null
-        ? ` (${twitter.followers.toLocaleString()} followers)`
-        : "";
-    rows.push({ label: "X", text: `${twitter.bio}${followers}` });
-  }
-  if (website?.summary || website?.title) {
-    rows.push({
-      label: "Website",
-      text: [website.title, website.summary].filter(Boolean).join(" — "),
-    });
-  }
-
-  if (!rows.length) {
-    return <div className={styles.enrichPending}>Nothing public on their profiles.</div>;
-  }
-  return (
-    <dl className={styles.enrich}>
-      {rows.map((r) => (
-        <div key={r.label} className={styles.enrichRow}>
-          <dt>{r.label}</dt>
-          <dd>
-            {r.href ? (
-              <a href={r.href} target="_blank" rel="noreferrer">
-                {r.text}
-              </a>
-            ) : (
-              r.text
-            )}
-            {r.note ? <span className={styles.enrichNote}> {r.note}</span> : null}
-          </dd>
-        </div>
-      ))}
-    </dl>
   );
 }

@@ -15,8 +15,9 @@ session is a signed HttpOnly cookie.
   with their social links, fetched through the you.com Contents API. Each
   participant is then enriched from their LinkedIn, X and website (headline,
   location, bio, site summary); for people with no LinkedIn link, a
-  conservative name search finds it. Title matching and recommendations
-  aren't built yet.
+  conservative name search finds it. Tabs, search, role/industry filters,
+  sorting and a starred "Want to meet" list narrow the list down. Matching
+  against your own title and recommendations aren't built yet.
 
 See [Where this is going](#where-this-is-going) for the rest.
 
@@ -188,6 +189,43 @@ preserving order (used by the route when no `personId` is given).
 
 Instagram, TikTok and YouTube links are shown but not enriched yet.
 
+### Filters
+
+Above the list, a filter bar (`app/people-filters.tsx`) narrows the
+participants down to the ones worth talking to. It runs entirely in the
+browser on data already loaded, so it costs no you.com calls, and it
+updates live as enrichment arrives.
+
+- **Tabs:** All · Hosts · Guests · ★ Want to meet. Each count reflects the
+  other active filters.
+- **Search:** every word must appear somewhere in the person's name, Luma
+  bio, LinkedIn headline/about/location, X bio or website.
+- **Role** chips (Founder, Leadership, Engineer, Research / Data, Product,
+  Design, Investor, Sales / Growth, Marketing, Community / Events,
+  Advisor / Consultant, Student).
+- **Industry & interests** chips (AI, Fintech, Crypto / Web3, Health / Bio,
+  Climate / Energy, Dev tools / Infra, B2B / SaaS, Consumer, Media / Creator,
+  Education, Robotics / Hardware, Real estate, Legal).
+- **Sort:** Hosts first (Luma's order), Most senior, Most X followers, Name.
+
+Within a chip group a person needs any selected chip; across groups, all of
+them (e.g. Engineer **and** (AI **or** Fintech)). Chips nobody matches are
+hidden, and chip counts ignore their own group so selecting one doesn't zero
+out its neighbours.
+
+**Tags** come from `app/lib/classify.ts`: plain keyword rules (word-bounded,
+case-insensitive), so a wrong tag can be traced to the word that caused it.
+Roles are read only from what someone *does* (Luma bio, LinkedIn headline, X
+bio), so "I write about founders" in an About section doesn't make someone a
+founder; industries read everything. Seniority for sorting runs 5 (founder,
+C-level) → 4 (VP, head of, partner) → 3 (director) → 2 (lead, senior,
+manager) → 0 (student, intern), with 1 for anything else. Each card shows its
+tags, and clicking one toggles that filter.
+
+**Stars** ("Want to meet") are kept in `localStorage` under
+`hack14:starred:<event url>`: per browser, per event, never sent to the
+server. Blocked storage just means stars last for the session.
+
 ### you.com client and cache
 
 **`app/lib/you.ts`** — a thin typed client for the you.com Search and
@@ -237,10 +275,13 @@ goes through it.
 app/
   layout.tsx, globals.css      root layout; system font stack (no next/font/google)
   page.tsx, page.module.css    sign in / sign out UI (client component)
-  event-lookup.tsx             Luma link input + participant list + enrichment (client component)
+  event-lookup.tsx             Luma link input, enrichment, stars, filtered list (client component)
+  people-filters.tsx           tabs, search, chips, sort; applyFilters() (client component)
+  person-card.tsx              one participant: details, tags, star (client component)
   lib/
-    types.ts                   the User type, shared by routes and the page
-    api.ts                     client-side helpers: loginUrl, fetchMe(), logout()
+    types.ts                   shared types: User, Participant, EventParticipants, Enrichment
+    api.ts                     client-side helpers: auth, event participants, enrichment
+    classify.ts                role/industry tags + seniority from profile text (client-safe)
     env.ts                     env vars, read lazily               (server-only)
     session.ts                 session + OAuth-transaction cookies (server-only)
     google.ts                  authorization URL, PKCE, code exchange, ID-token verification (server-only)
@@ -281,10 +322,12 @@ cache, keyed on the query — shared across users
 connection graphs or mutuals: those sit behind LinkedIn's login wall and no
 search-based tool reaches them. Public headlines are indexed and do.
 
-Built so far: the you.com client, the query cache, the Luma event lookup, and
-per-participant enrichment, which already pulls each LinkedIn headline (see
-[Layer 2](#layer-2-luma-participants-via-youcom)). Still to build: headline →
-title extraction, title normalization and matching, and recommendations.
+Built so far: the you.com client, the query cache, the Luma event lookup,
+per-participant enrichment (which already pulls each LinkedIn headline), and
+keyword-based role/industry tags with filters (see
+[Layer 2](#layer-2-luma-participants-via-youcom)). Still to build: the user's
+own title, finer title normalization (role + seniority level) and matching
+against it, and recommendations.
 
 Two things this still needs from the user side:
 
