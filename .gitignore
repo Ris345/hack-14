@@ -1,0 +1,40 @@
+# secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+secrets/
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+
+# next.js
+/.next/
+/out/
+/build
+
+# testing
+/coverage
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+.pnpm-debug.log*
+
+# misc
+.DS_Store
+.vercel
+.idea/
+.vscode/
+
+# next dev regenerates this; see CLAUDE.md
+AGENTS.md
