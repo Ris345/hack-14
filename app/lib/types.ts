@@ -28,26 +28,36 @@ export type Participant = {
 
 /**
  * What we learned about a participant from the public web, beyond what Luma
- * carried. Every field is optional: a no-match is the common case, not an error.
+ * carried. A section is absent when there's nothing for it: no such link, no
+ * confident LinkedIn match, or a page that couldn't be fetched. A no-match is
+ * the common case, not an error.
  */
-export type Profile = {
-  linkedin: string | null;
-  /** The LinkedIn headline, e.g. "Founder & CEO at Acme". */
-  headline: string | null;
-  /** A few sentences of public context, from you.com's extracted highlights. */
-  summary: string | null;
-  /**
-   * How much to trust that this profile is *this* person.
-   * `high` — the handle came from Luma itself, so there's nothing to guess.
-   * `medium` — a search hit whose title carries the participant's full name.
-   */
-  confidence: "high" | "medium";
+export type Enrichment = {
+  linkedin?: {
+    url: string;
+    /**
+     * How much to trust that this profile is *this* person.
+     * `high` — the link came from Luma itself, so there's nothing to guess.
+     * `medium` — a search hit whose title carries the participant's full name.
+     */
+    confidence: "high" | "medium";
+    /** Their LinkedIn headline, e.g. "Founder @ The Builder Series". */
+    headline: string | null;
+    location: string | null;
+    /** The About section, or the search snippet if the page couldn't be read. */
+    about: string | null;
+  };
+  twitter?: {
+    bio: string | null;
+    followers: number | null;
+  };
+  website?: {
+    title: string | null;
+    summary: string | null;
+  };
 };
 
-export type EnrichedParticipant = Participant & {
-  /** `null` when no profile could be matched confidently. */
-  profile: Profile | null;
-};
+export type EnrichedParticipant = Participant & { enrichment: Enrichment };
 
 /** What `POST /api/luma/participants` returns. */
 export type EventParticipants = {

@@ -1,7 +1,24 @@
-import type { EventParticipants, User } from "./types";
+import type { Enrichment, EventParticipants, User } from "./types";
 
-export type { EventParticipants, User };
+export type { Enrichment, EventParticipants, User };
 export type { Participant, Socials } from "./types";
+
+/** What one participant's social pages say about them. */
+export async function fetchEnrichment(
+  eventUrl: string,
+  personId: string,
+): Promise<Enrichment> {
+  const res = await fetch("/api/luma/enrich", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: eventUrl, personId }),
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(json?.error ?? `Enrichment failed (${res.status}).`);
+  }
+  return json as Enrichment;
+}
 
 /** Look up an event's public participants. Throws with a message fit for the UI. */
 export async function fetchEventParticipants(

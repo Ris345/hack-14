@@ -1,84 +1,147 @@
 import "server-only";
 
-import { search, resultText } from "./you";
+import { contents, resultText, search } from "./you";
 import { cached, cacheKey } from "./cache";
-import type { EnrichedParticipant, Participant, Profile } from "./types";
+import type { EnrichedParticipant, Enrichment, Participant } from "./types";
 
 /**
- * Turn a bare participant (a name, maybe a one-line bio) into someone you can
- * decide whether to meet, using you.com Search over LinkedIn.
+ * Turn a bare participant (a name, maybe a one-line bio, maybe some social
+ * links) into someone you can decide whether to meet, using you.com.
  *
- * This is the half of layer 2 that doesn't care where the names came from —
- * Luma's public page, an authenticated guest list, or a CSV. It takes
- * `Participant[]` and returns the same people with a `profile` attached.
+ * This doesn't care where the names came from — Luma's public page, an
+ * authenticated guest list, or a CSV. It takes a `Participant` and returns
+ * what their public profiles say, in two steps:
  *
- * Two rules shape everything here:
+ *   1. **Find their LinkedIn.** If Luma lists it, use it (`high` confidence).
+ *      Otherwise search linkedin.com for them (`medium`).
+ *   2. **Read their pages.** Fetch the LinkedIn profile, X profile and website
+ *      in parallel with the Contents API and parse headline, location, about,
+ *      bio, followers and a site summary.
  *
- *   1. A wrong profile is worse than no profile. Attaching the wrong Jane Doe
- *      makes the whole feature untrustworthy, so a match must be *verifiable*
- *      from the result title, and anything short of that resolves to `null`.
- *   2. Searches are metered. Every lookup is cached on the person, people
- *      already carrying a LinkedIn handle are never searched for at all, and
- *      concurrency is bounded so one event can't fan out into 50 parallel calls.
+ * Three rules shape everything here:
+ *
+ *   - A wrong profile is worse than no profile. Attaching the wrong Jane Doe
+ *     makes the whole feature untrustworthy, so a searched match must be
+ *     *verifiable* from the result title, and anything short of that resolves
+ *     to no LinkedIn section at all.
+ *   - Calls are metered. Every search and every page is cached (a person who
+ *     shows up at two events costs one lookup), people Luma already knows the
+ *     LinkedIn of are never searched for, and batch concurrency is bounded.
+ *   - It's best-effort. A page that fails (login wall, timeout) leaves its
+ *     section out, and a site format change yields `null` fields, not an error.
  */
 
-/** Simultaneous you.com searches. Enough to stay fast, low enough to be polite. */
+/** Simultaneous participants in `enrichParticipants`. Each is up to 1 search + 3 pages. */
 const CONCURRENCY = 4;
 
 /** A name this short can't be matched safely — "Al" matches half of LinkedIn. */
 const MIN_NAME_LENGTH = 3;
 
+/** you.com's default is 10 s; LinkedIn and X are slow to render. */
+const CRAWL_TIMEOUT_S = 20;
+
+/** Trim long text so the UI stays a list, not a wall. */
+const MAX_TEXT = 280;
+
+/** Enrich one participant. The UI calls this per person so cards fill in as they're ready. */
+export async function enrichParticipant(
+  person: Participant,
+): Promise<Enrichment> {
+  const { twitter, website } = person.socials;
+
+  const [li, tw, web] = await Promise.all([
+    enrichLinkedIn(person),
+    twitter ? fetchMarkdown(twitter) : null,
+    website ? fetchMarkdown(website) : null,
+  ]);
+
+  const result: Enrichment = {};
+  if (li) result.linkedin = li;
+  if (tw) result.twitter = parseTwitter(tw);
+  if (web) result.website = parseWebsite(web.markdown, web.title);
+  return result;
+}
+
+/** Enrich a whole list, at most `CONCURRENCY` people at a time, in input order. */
 export async function enrichParticipants(
   participants: Participant[],
 ): Promise<EnrichedParticipant[]> {
   return mapPool(participants, CONCURRENCY, async (participant) => ({
     ...participant,
-    profile: await enrichOne(participant),
+    enrichment: await enrichParticipant(participant),
   }));
 }
 
-/**
- * Resolve one participant's profile.
- *
- * Cached on the identity we searched for, not on the participant's Luma id: the
- * same person showing up at two events is one lookup, and the key stays stable
- * when Luma reissues ids.
- */
-function enrichOne(participant: Participant): Promise<Profile | null> {
-  // Luma already knows: trust it and spend nothing.
-  if (participant.socials.linkedin) {
-    return Promise.resolve({
-      linkedin: participant.socials.linkedin,
-      headline: null,
-      summary: participant.bio,
-      confidence: "high",
-    });
-  }
+// ---------------------------------------------------------------------------
+// LinkedIn: find the profile, then read it
+// ---------------------------------------------------------------------------
 
-  const name = participant.name.trim();
-  if (name.length < MIN_NAME_LENGTH || name.toLowerCase() === "unknown") {
-    return Promise.resolve(null);
-  }
+async function enrichLinkedIn(
+  person: Participant,
+): Promise<Enrichment["linkedin"] | null> {
+  // Luma already knows: trust it and spend no search.
+  const known = person.socials.linkedin;
+  const found = known ? null : await findLinkedIn(person);
+  const url = known ?? found?.url;
+  if (!url) return null;
 
-  const query = buildQuery(name, participant.bio);
-  return cached(cacheKey("enrich:linkedin", query), () => lookup(name, query));
+  const page = await fetchMarkdown(url);
+  const parsed = page ? parseLinkedIn(page) : null;
+
+  return {
+    url,
+    confidence: known ? "high" : "medium",
+    // Prefer the profile page; fall back to what the search result said.
+    headline: parsed?.headline ?? found?.headline ?? null,
+    location: parsed?.location ?? null,
+    about: parsed?.about ?? found?.summary ?? null,
+  };
 }
 
-async function lookup(name: string, query: string): Promise<Profile | null> {
+type SearchHit = { url: string; headline: string | null; summary: string | null };
+
+/**
+ * Search linkedin.com for a participant Luma has no LinkedIn link for.
+ *
+ * Cached on the query, not the participant's Luma id: the same person showing
+ * up at two events is one lookup, and the key stays stable when Luma reissues
+ * ids. Failures resolve to null — enrichment is best-effort.
+ */
+async function findLinkedIn(person: Participant): Promise<SearchHit | null> {
+  const name = person.name.trim();
+  if (name.length < MIN_NAME_LENGTH || name.toLowerCase() === "unknown") {
+    return null;
+  }
+
+  const query = buildQuery(name, person.bio);
+  try {
+    return await cached(cacheKey("enrich:linkedin", query), () =>
+      searchLinkedIn(name, query),
+    );
+  } catch (err) {
+    console.error(`LinkedIn search failed for "${query}":`, err);
+    return null;
+  }
+}
+
+async function searchLinkedIn(
+  name: string,
+  query: string,
+): Promise<SearchHit | null> {
+  // No highlights: we read the matched profile with the Contents API anyway,
+  // so extracting passages here would pay twice for the same page.
   const results = await search(query, {
     count: 5,
     includeDomains: ["linkedin.com"],
-    highlights: true,
   });
 
   for (const result of results) {
     if (!isPersonProfile(result.url)) continue;
     if (!titleNamesPerson(result.title, name)) continue;
     return {
-      linkedin: canonicalProfileUrl(result.url),
+      url: canonicalProfileUrl(result.url),
       headline: headlineFrom(result.title),
-      summary: truncate(resultText(result), 400),
-      confidence: "medium",
+      summary: clip(resultText(result)),
     };
   }
   return null;
@@ -168,11 +231,125 @@ function normalize(value: string): string {
     .trim();
 }
 
-function truncate(value: string, max: number): string | null {
-  const text = value.replace(/\s+/g, " ").trim();
+// ---------------------------------------------------------------------------
+// Reading pages
+// ---------------------------------------------------------------------------
+
+type Page = { markdown: string; title: string | null };
+
+/** The page's markdown, or null on any failure — enrichment is best-effort. */
+async function fetchMarkdown(url: string): Promise<Page | null> {
+  try {
+    const page = await contents(url, {
+      formats: ["markdown"],
+      crawlTimeout: CRAWL_TIMEOUT_S,
+    });
+    if (!page?.markdown) return null;
+    return { markdown: page.markdown, title: page.title ?? null };
+  } catch (err) {
+    console.error(`Enrichment fetch failed for ${url}:`, err);
+    return null;
+  }
+}
+
+/**
+ * LinkedIn profiles come back as:
+ *
+ *     # Name
+ *     ![Name](avatar)
+ *     **Headline | with | segments |**
+ *     - **Location**: New York, New York, United States
+ *     About paragraph…
+ */
+export function parseLinkedIn({ markdown }: Page) {
+  const lines = markdown.split("\n").map((l) => l.trim()).filter(Boolean);
+
+  const boldLine = lines.find((l) => /^\*\*[^*].*\*\*$/.test(l));
+  const headline = boldLine
+    ? boldLine
+        .replace(/^\*\*|\*\*$/g, "")
+        .split("|")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .join(" · ")
+    : null;
+
+  const location =
+    lines
+      .map((l) => l.match(/^-\s*\*\*Location\*\*:\s*(.+)$/i)?.[1])
+      .find(Boolean) ?? null;
+
+  const about =
+    lines.find(
+      (l) =>
+        !/^[#!\-*>|]/.test(l) && // not a heading, image, list item, bold line or table
+        l.length > 40,
+    ) ?? null;
+
+  return {
+    headline: clip(headline),
+    location: clip(location),
+    about: clip(about),
+  };
+}
+
+/**
+ * X profiles come back as a list of fields:
+ *
+ *     - **description**: 60,000+ member community…
+ *     - **followers_count**: 27
+ */
+export function parseTwitter({ markdown }: Page): NonNullable<Enrichment["twitter"]> {
+  const field = (name: string) =>
+    markdown.match(new RegExp(`^\\s*-\\s*\\*\\*${name}\\*\\*:\\s*(.+)$`, "m"))?.[1]?.trim() ??
+    null;
+
+  const followersRaw = field("followers_count");
+  const followers = followersRaw ? Number(followersRaw.replace(/,/g, "")) : NaN;
+
+  return {
+    bio: clip(field("description")),
+    followers: Number.isFinite(followers) ? followers : null,
+  };
+}
+
+/** A personal or company site: its title and the first real paragraph. */
+export function parseWebsite(
+  markdown: string,
+  title: string | null,
+): NonNullable<Enrichment["website"]> {
+  const lines = markdown.split("\n").map((l) => l.trim()).filter(Boolean);
+
+  // The first substantial paragraph; skip headings, nav, images, links, lists.
+  const summary =
+    lines.find(
+      (l) =>
+        !/^[#!\-*>|\[]/.test(l) &&
+        !/^\d+\.\s/.test(l) &&
+        l.length > 40,
+    ) ?? null;
+
+  return { title: clip(title), summary: clip(stripMarkdown(summary)) };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function stripMarkdown(text: string | null): string | null {
   if (!text) return null;
-  if (text.length <= max) return text;
-  return `${text.slice(0, max).trimEnd()}…`;
+  return text
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "") // images
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // links → their text
+    .replace(/[*_`]+/g, "")
+    .trim();
+}
+
+function clip(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const t = text.replace(/\s+/g, " ").trim();
+  if (!t) return null;
+  return t.length > MAX_TEXT ? `${t.slice(0, MAX_TEXT - 1).trimEnd()}…` : t;
 }
 
 /**

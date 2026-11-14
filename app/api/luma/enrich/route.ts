@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/app/lib/session";
 import { getEventParticipants, LumaError } from "@/app/lib/luma";
-import { enrichParticipants } from "@/app/lib/enrich";
+import { enrichParticipant, enrichParticipants } from "@/app/lib/enrich";
 import { YouApiError } from "@/app/lib/you";
 import type { EnrichedParticipant, EventParticipants } from "@/app/lib/types";
 
@@ -10,12 +10,17 @@ export type EnrichedEvent = Omit<EventParticipants, "participants"> & {
 };
 
 /**
- * Body: `{ "url": "https://luma.com/<event>" }`. Returns `EnrichedEvent`.
+ * Body: `{ "url": "https://luma.com/<event>", "personId"?: "usr-…" }`.
  *
- * Takes the event URL rather than a participant list so the names being looked
+ * - With `personId`: returns `Enrichment` for that one participant. The UI
+ *   calls it once per person so each card fills in as soon as it's ready.
+ * - Without: returns `EnrichedEvent`, every participant enriched (slow — up to
+ *   a search plus three page fetches per person, four people at a time).
+ *
+ * Takes the event URL rather than names or links so the people being looked
  * up are ones we fetched ourselves — a client-supplied list would let anyone
- * spend our you.com budget on arbitrary searches. The participant fetch is
- * cached, so the only new cost here is the per-person enrichment.
+ * spend our you.com budget on arbitrary searches and pages. The participant
+ * fetch is cached, so the only new cost here is the enrichment itself.
  */
 export async function POST(request: Request) {
   if (!(await getSession())) {
@@ -24,13 +29,32 @@ export async function POST(request: Request) {
 
   const body = (await request.json().catch(() => null)) as {
     url?: unknown;
+    personId?: unknown;
   } | null;
   if (typeof body?.url !== "string" || !body.url.trim()) {
     return NextResponse.json({ error: "Missing url" }, { status: 400 });
   }
+  if (body.personId !== undefined && typeof body.personId !== "string") {
+    return NextResponse.json(
+      { error: "personId must be a string" },
+      { status: 400 },
+    );
+  }
 
   try {
     const event = await getEventParticipants(body.url);
+
+    if (body.personId !== undefined) {
+      const person = event.participants.find((p) => p.id === body.personId);
+      if (!person) {
+        return NextResponse.json(
+          { error: "No such participant on that event" },
+          { status: 404 },
+        );
+      }
+      return NextResponse.json(await enrichParticipant(person));
+    }
+
     return NextResponse.json({
       ...event,
       participants: await enrichParticipants(event.participants),
